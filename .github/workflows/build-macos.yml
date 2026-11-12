@@ -1,0 +1,75 @@
+name: Compilar app macOS
+
+on:
+  push:
+    branches: [main, escritorio]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # para publicar la release al etiquetar una versión
+
+jobs:
+  build:
+    runs-on: macos-15  # Apple Silicon (arm64)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Versión
+        id: ver
+        run: echo "version=$(python -c "import re;print(re.search(r'APP_VERSION = \"([^\"]+)\"', open('app/config.py').read()).group(1))")" >> "$GITHUB_OUTPUT"
+
+      - name: Comprobar que la etiqueta coincide con APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "${GITHUB_REF_NAME#v}" = "${{ steps.ver.outputs.version }}"
+
+      - name: Empaquetar
+        run: pyinstaller --noconfirm --clean PanelInventario.spec
+
+      - name: Firma ad-hoc (sin cuenta de Apple Developer)
+        run: |
+          codesign --force --deep --sign - "dist/Panel Inventario.app"
+          codesign --verify --deep --strict --verbose=2 "dist/Panel Inventario.app"
+          file "dist/Panel Inventario.app/Contents/MacOS/Panel Inventario"
+
+      - name: Prueba de arranque de la app empaquetada
+        run: |
+          "dist/Panel Inventario.app/Contents/MacOS/Panel Inventario" --selftest | tee selftest.txt
+          grep -q "SELFTEST OK" selftest.txt
+
+      - name: Zip y DMG
+        run: |
+          V=${{ steps.ver.outputs.version }}
+          cd dist
+          ditto -c -k --keepParent "Panel Inventario.app" "PanelInventario-$V-arm64.zip"
+          hdiutil create -volname "Panel Inventario" -srcfolder "Panel Inventario.app" -ov -format UDZO "PanelInventario-$V-arm64.dmg"
+          shasum -a 256 PanelInventario-$V-arm64.* > "PanelInventario-$V-arm64.sha256"
+          cat "PanelInventario-$V-arm64.sha256"
+          du -sh "Panel Inventario.app" PanelInventario-$V-arm64.*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PanelInventario-${{ steps.ver.outputs.version }}-arm64
+          path: |
+            dist/PanelInventario-*.zip
+            dist/PanelInventario-*.dmg
+            dist/PanelInventario-*.sha256
+          retention-days: 14
+
+      - name: Publicar release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/PanelInventario-*.zip dist/PanelInventario-*.dmg dist/PanelInventario-*.sha256 \
+            --title "Panel Inventario $GITHUB_REF_NAME" --generate-notes
