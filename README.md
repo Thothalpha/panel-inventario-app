@@ -1,9 +1,12 @@
 # Panel Inventario
 
-App de escritorio para **macOS (Apple Silicon)** que lee el inventario de **Odoo** en modo de solo lectura, calcula la
+App de escritorio para **macOS (Apple Silicon)** que lee el inventario de **Odoo** y de **Holded** en modo de solo lectura, calcula la
 previsión de demanda, la cobertura y el punto de pedido de cada producto, genera **alertas** e incluye un **asistente
-de IA** que responde preguntas consultando Odoo en el momento. Tú eliges el proveedor del modelo: OpenRouter, OpenAI,
+de IA** que responde preguntas consultando el ERP en el momento. Tú eliges el proveedor del modelo: OpenRouter, OpenAI,
 Anthropic o cualquier servidor compatible con la API de OpenAI.
+
+**Dos secciones independientes, Odoo y Holded**, con un selector en la cabecera. Cada sección tiene su propia conexión con
+el ERP, su clave y modelo de IA, sus datos, sus alertas, sus ajustes y su gasto de IA.
 
 ## Qué hace
 
@@ -48,17 +51,35 @@ prefieres revisarlo antes de ejecutarlo, está en [`scripts/instalar-mac.sh`](sc
 
 **Actualizar:** cuando hay una versión nueva, la app lo avisa y muestra el mismo comando para copiarlo.
 
-## Configuración (la primera vez)
+## Configuración (la primera vez, en cada sección)
 
 1. **Odoo:** dirección, base de datos (normalmente se detecta sola), tu usuario (login) y una **API key**. La API key
    se crea en Odoo, en Mi perfil → Seguridad de la cuenta → Nueva API key. Elige una duración larga.
+   **Holded:** un token de la **API v2** (empieza por `pat_`), que se crea en Holded → Ajustes → Desarrolladores → API.
+   Basta con permisos de lectura de productos, almacenes, albaranes, pedidos de compra, órdenes de producción y
+   contactos. Las claves antiguas de la API v1 ya no funcionan.
 2. **Asistente IA:** elige proveedor y pega la clave de su API. Con **OpenRouter** se cargan todos sus modelos con el
    precio de entrada y salida; el modelo por defecto es DeepSeek V4 Flash. Los modelos que no pueden usar
    herramientas aparecen desactivados, porque el asistente las necesita para consultar Odoo.
 
+## Cómo se leen los datos de Holded
+
+| En la app | En Holded (API v2) |
+|---|---|
+| Productos y stock por almacén | Productos con stock (`has_stock`), `stocks` por almacén; archivados excluidos |
+| Categoría | Primera etiqueta del producto (Holded no tiene categorías de producto en la API) |
+| Mínimo del ERP | `min_stock` del producto |
+| Lista de materiales | `pack_items` de los packs |
+| Demanda | Líneas de **albaranes** (excepto cancelados) + consumo de las órdenes de producción terminadas |
+| Compras pendientes | Líneas de pedidos de compra no recibidas (`supplied = false`), con su fecha prevista |
+| Plazo de entrega | Holded no lo guarda: se usa el plazo por defecto de Configuración |
+
+Holded permite unas 100 peticiones por minuto: la app las espacia y reintenta si recibe un 429, así que la primera
+carga de datos puede tardar algo más que en Odoo.
+
 ## Privacidad y seguridad
 
-- **Solo lectura.** El cliente de Odoo solo permite métodos de lectura y rechaza cualquier otro. El asistente solo
+- **Solo lectura.** El cliente de Odoo solo permite métodos de lectura y el de Holded solo hace peticiones GET. El asistente solo
   puede consultar una lista blanca de modelos (productos, stock, compras, fabricación y ventas).
 - **Claves.** Las claves de Odoo y del proveedor de IA se guardan en el **Llavero de macOS**. El resto de la
   configuración y los datos locales (alertas personalizadas, resúmenes, uso) están en
@@ -88,6 +109,7 @@ app/desktop.py          arranque: carpetas de macOS, servidor local con token y 
 app/main.py             API (FastAPI)
 app/credentials.py      conexión con Odoo y con la IA; claves en el Llavero
 app/odoo_client.py      cliente XML-RPC de solo lectura, con tiempo máximo de espera
+app/holded.py           cliente de la API v2 de Holded (solo GET) y traducción al modelo de datos de la app
 app/data.py             extracción de Odoo (y datos de demo) con caché
 app/analytics.py        previsión, métricas, ABC/XYZ y KPIs
 app/alerts.py           reglas de alerta, alertas vistas, resúmenes y uso (SQLite)

@@ -21,7 +21,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import ai, alerts, analytics, config, credentials, data, models_catalog
+from . import ai, alerts, analytics, config, credentials, data, holded, models_catalog
 from .odoo_client import DB_HINT, fault_message, is_db_fault
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,19 @@ app.mount("/static", StaticFiles(directory=config.ROOT / "static"), name="static
 
 
 @app.middleware("http")
+async def section_ctx(request: Request, call_next):
+    """Cada petición trabaja sobre una sección (Odoo u Holded), indicada en la cabecera X-Section."""
+    sec = request.headers.get("x-section") or config.DEFAULT_SECTION
+    if sec not in config.SECTIONS:
+        return JSONResponse({"detail": f"Sección no válida: {sec}"}, status_code=400)
+    token = config.set_section(sec)
+    try:
+        return await call_next(request)
+    finally:
+        config._section.reset(token)
+
+
+@app.middleware("http")
 async def local_guard(request: Request, call_next):
     if APP_TOKEN:
         host = (request.headers.get("host") or "").rsplit(":", 1)[0]
@@ -64,7 +77,7 @@ async def unexpected_error(request: Request, exc: Exception):
                                    "Detalles en ~/Library/Logs/PanelInventario/app.log"}, status_code=500)
 
 
-_mcache = {"key": None, "metrics": None}
+_mcache: dict = {}
 _mlock = threading.Lock()
 
 
@@ -73,9 +86,10 @@ def state(force=False):
     snap = data.get_snapshot(force=force)
     key = (snap["generated_at"], id(snap), json.dumps(s, sort_keys=True))
     with _mlock:
-        if _mcache["key"] != key:
-            _mcache.update(key=key, metrics=analytics.compute(snap, s))
-        metrics = _mcache["metrics"]
+        mc = _mcache.setdefault(config.section(), {"key": None, "metrics": None})
+        if mc["key"] != key:
+            mc.update(key=key, metrics=analytics.compute(snap, s))
+        metrics = mc["metrics"]
     al = alerts.evaluate(metrics, snap, s)
     return s, snap, metrics, al
 
@@ -86,9 +100,11 @@ def _odoo_errors(fn, *args):
     except data.NotConfigured as e:
         raise HTTPException(409, str(e))
     except PermissionError as e:
-        raise HTTPException(401, f"Odoo: {e}")
+        raise HTTPException(401, f"{config.erp_name()}: {e}")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except holded.HoldedError as e:
+        raise HTTPException(502, str(e))
     except xmlrpc.client.Fault as f:
         log.warning("Odoo devolvió un error: %s", f.faultString)
         if is_db_fault(f):
@@ -100,7 +116,7 @@ def _odoo_errors(fn, *args):
             else " Revisa la dirección de Odoo." if e.errcode == 404 else ""
         raise HTTPException(502, f"Odoo respondió {e.errcode} {e.errmsg}.{hint}")
     except (OSError, TimeoutError) as e:
-        raise HTTPException(502, f"No se pudo contactar con Odoo: {e}")
+        raise HTTPException(502, f"No se pudo contactar con {config.erp_name()}: {e}")
 
 
 @app.get("/")
@@ -114,7 +130,8 @@ def dashboard(refresh: bool = False):
     ov = analytics.overview(metrics, [a for a in al if not a["acked"]])
     ov["pending_po_value"] = round(sum(p["qty"] * p["price"] for p in snap["pending_po"]), 2)
     return {
-        "source": snap["source"], "generated_at": snap["generated_at"], "warnings": snap["warnings"],
+        "source": snap["source"], "section": config.section(), "erp_name": config.erp_name(),
+        "generated_at": snap["generated_at"], "warnings": snap["warnings"],
         "ai_available": ai.ai_available(), "overview": ov, "alerts": al,
         "products": sorted(metrics.values(), key=lambda r: -r["value"]),
         "last_summary": alerts.last_summary(),
@@ -248,7 +265,7 @@ async def put_settings(req: Request):
 @app.get("/api/setup")
 def setup_status():
     return {**credentials.public(), "version": config.APP_VERSION, "demo": config.DEMO_MODE,
-            "usage_month": alerts.month_usage()}
+            "usage_month": alerts.month_usage(), "sections": config.SECTIONS}
 
 
 @app.post("/api/setup/odoo/test")
@@ -260,6 +277,17 @@ async def setup_odoo_test(req: Request):
         raise HTTPException(400, "Completa la dirección, el usuario y la API key")
     return await run_in_threadpool(_odoo_errors, data.test_connection, b["url"],
                                    (b.get("db") or "").strip(), b["user"].strip(), key.strip())
+
+
+@app.post("/api/setup/holded/test")
+async def setup_holded_test(req: Request):
+    b = await req.json()
+    if config.section() != "holded":
+        raise HTTPException(400, "Esta prueba es de la sección Holded")
+    key = (b.get("key") or "").strip() or credentials.get().get("holded_key", "")
+    if not key:
+        raise HTTPException(400, "Pega el token de la API de Holded")
+    return await run_in_threadpool(_odoo_errors, holded.test_connection, key)
 
 
 @app.post("/api/setup/ai/test")
@@ -286,7 +314,7 @@ async def setup_ai_test(req: Request):
 async def setup_save(req: Request):
     b = await req.json()
     try:
-        credentials.save(odoo=b.get("odoo"), ai=b.get("ai"))
+        credentials.save(odoo=b.get("odoo"), ai=b.get("ai"), holded=b.get("holded"))
     except (ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e))
     data.reset()
@@ -341,7 +369,9 @@ def _ai_call(fn, *args):
             raise HTTPException(402, "Sin saldo en el proveedor de IA: añade créditos en tu cuenta.")
         raise HTTPException(502, f"Error del proveedor de IA ({e.status_code}): {getattr(e, 'message', e)}")
     except PermissionError as e:
-        raise HTTPException(401, f"Odoo: {e}")
+        raise HTTPException(401, f"{config.erp_name()}: {e}")
+    except holded.HoldedError as e:
+        raise HTTPException(502, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:

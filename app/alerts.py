@@ -6,7 +6,6 @@ from datetime import date, datetime, timedelta
 
 from . import config
 
-DB = config.DATA_DIR / "dashboard.db"
 SEVERITIES = ["critica", "alta", "media", "baja"]
 SEV_RANK = {s: i for i, s in enumerate(SEVERITIES)}
 
@@ -37,11 +36,11 @@ AUTO_KINDS = {
                       "desc": "La cobertura es menor que el plazo de entrega: se agotará antes de que llegue una compra.",
                       "default_severity": "automática (crítica, alta o media según si las compras en curso lo cubren)",
                       "settings": ["plazo_entrega_defecto_dias", "nivel_servicio"]},
-    "bajo_minimo": {"label": "Bajo mínimo de Odoo",
-                    "desc": "El stock previsto está por debajo del mínimo de la regla de reabastecimiento de Odoo.",
+    "bajo_minimo": {"label": "Bajo stock mínimo",
+                    "desc": "El stock previsto está por debajo del mínimo definido en el ERP (regla de reabastecimiento en Odoo, stock mínimo en Holded).",
                     "default_severity": "alta", "settings": []},
     "punto_pedido": {"label": "Bajo punto de pedido",
-                     "desc": "Sin regla en Odoo y por debajo del punto de pedido calculado por el panel.",
+                     "desc": "Sin mínimo en el ERP y por debajo del punto de pedido calculado por el panel.",
                      "default_severity": "media", "settings": ["nivel_servicio", "periodo_revision_dias"]},
     "exceso": {"label": "Exceso de stock", "desc": "Cobertura muy alta: dinero inmovilizado.",
                "default_severity": "media o baja según el valor", "settings": ["exceso_cobertura_dias", "exceso_valor_min"]},
@@ -70,7 +69,7 @@ def family(ref: str) -> str:
 
 
 def db():
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(config.section_dir() / "dashboard.db")
     con.row_factory = sqlite3.Row
     con.executescript("""
         CREATE TABLE IF NOT EXISTS rules (
@@ -324,6 +323,7 @@ def _fmt(v):
 def evaluate(metrics: dict, snapshot: dict, s: dict) -> list:
     today = date.today()
     alerts = []
+    erp = config.erp_name()
 
     def add(kind, sev, r, title, detail, action, impact=None, extra_key=""):
         alerts.append({
@@ -353,16 +353,16 @@ def evaluate(metrics: dict, snapshot: dict, s: dict) -> list:
                 impact=max(0, lt - cov) * d * (r["price"] or r["cost"]))
         # 2. Por debajo del mínimo de la regla de reabastecimiento de Odoo
         if r["orderpoint_min"] and r["virtual"] < r["orderpoint_min"]:
-            add("bajo_minimo", "alta", r, "Previsto por debajo del mínimo de Odoo",
+            add("bajo_minimo", "alta", r, f"Previsto por debajo del mínimo de {erp}",
                 f"Previsto {_fmt(r['virtual'])} < mínimo {_fmt(r['orderpoint_min'])}.",
-                "Lanzar la regla de reabastecimiento o pedir manualmente")
+                "Lanzar la regla de reabastecimiento o pedir manualmente" if erp == "Odoo" else "Pedir para volver por encima del stock mínimo")
         # 3. Sin regla y por debajo del punto de pedido calculado
         elif r["orderpoint_min"] is None and d > 0 and r["virtual"] < r["reorder_point"] and r["on_hand"] > 0 \
                 and not (cov is not None and cov < lt):
             add("punto_pedido", "media", r, "Por debajo del punto de pedido calculado",
                 f"Previsto {_fmt(r['virtual'])} < punto de pedido {_fmt(r['reorder_point'])} "
                 f"(seguridad {_fmt(r['safety_stock'])}, plazo {_fmt(lt)} d).",
-                f"Pedir {_fmt(r['suggested_order'])} {r['uom']} y crear regla mín/máx en Odoo")
+                f"Pedir {_fmt(r['suggested_order'])} {r['uom']} y definir un mínimo en {erp}")
         # 4. Exceso de stock
         if cov is not None and d > 0 and cov > s["exceso_cobertura_dias"] and r["value"] >= s["exceso_valor_min"]:
             excess_units = r["on_hand"] - d * s["exceso_cobertura_dias"]

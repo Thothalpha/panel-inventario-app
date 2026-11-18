@@ -5,9 +5,9 @@ Proveedores:
   - Anthropic (Claude)
 
 El modelo recibe herramientas de SOLO LECTURA:
-  - métricas ya calculadas por el panel (rápidas, sin tocar Odoo)
-  - consultas directas a Odoo (search_read / read_group) limitadas a una lista blanca de
-    modelos y ejecutadas con OdooReadOnly, que rechaza cualquier método de escritura
+  - métricas ya calculadas por el panel (rápidas, sin tocar el ERP)
+  - consultas directas al ERP de la sección: Odoo (search_read / read_group con OdooReadOnly) u
+    Holded (GET con HoldedReadOnly), siempre de solo lectura y sobre una lista blanca
   - proponer_alerta: valida una regla de alerta y la devuelve como PROPUESTA; solo se guarda
     si el usuario pulsa "Guardar" en el panel.
 """
@@ -20,7 +20,7 @@ import anthropic
 import openai
 
 from . import alerts as alerts_mod
-from . import analytics, config, credentials, data
+from . import analytics, config, credentials, data, holded
 
 log = logging.getLogger(__name__)
 MAX_TOOL_CHARS = 30000
@@ -40,20 +40,32 @@ SYSTEM_BASE = """Eres el analista de inventario de la empresa. Hablas con el res
 Cómo trabajas:
 - Responde siempre en español, directo y con cifras concretas (unidades, días, €). Formato Markdown: titulares cortos, listas y tablas cuando haya varios productos.
 - Las cifras salen de las herramientas, nunca de suposiciones. Si un dato no está, dilo y explica cómo conseguirlo.
-- Empieza por las herramientas del panel (resumen_inventario, buscar_productos, detalle_producto, listar_alertas): ya traen previsión, cobertura, stock de seguridad, punto de pedido y cantidad sugerida. Usa consulta_odoo / agregado_odoo solo para lo que el panel no tiene (pedidos concretos, proveedores, movimientos, fabricaciones, clientes...).
-- Las consultas a Odoo son de solo lectura. No puedes crear ni modificar nada en Odoo: si algo requiere una acción (pedir, ajustar, cambiar una regla), recomiéndala y di quién debe hacerla.
+- Empieza por las herramientas del panel (resumen_inventario, buscar_productos, detalle_producto, listar_alertas): ya traen previsión, cobertura, stock de seguridad, punto de pedido y cantidad sugerida. Usa la consulta directa al ERP ({ERP_TOOLS}) solo para lo que el panel no tiene (pedidos concretos, proveedores, movimientos, fabricaciones, clientes...).
+- Los datos vienen de {ERP} y las consultas son de solo lectura. No puedes crear ni modificar nada en {ERP}: si algo requiere una acción (pedir, ajustar, cambiar un mínimo), recomiéndala y di quién debe hacerla.
 - Gestión de alertas: el usuario decide qué alertas quiere, de qué productos y con qué severidad. Antes de cambiar nada, consulta listar_reglas_alerta.
   · Crear una alerta personalizada → proponer_alerta. Modificarla → proponer_modificar_alerta. Eliminarla → proponer_eliminar_alerta.
   · Alertas automáticas (sin stock, exceso, caducidad…): activar/desactivar un tipo, cambiar su severidad o dejar de avisar de productos, categorías o familias de referencia (prefijo: BOX, ENV, MC…) → proponer_config_automatica. Para no avisar de un producto en ninguna alerta usa kind "*".
   · Todo queda como PROPUESTA: el usuario la aplica con un botón. Nunca digas que ya está hecho; di qué cambiará al aplicarla.
 - Distingue hechos de estimaciones: la previsión es estadística (Holt amortiguado / Croston-SBA, con su precisión de backtest); avisa si la precisión es baja (< 0,5) o la historia corta.
-- La demanda incluye ventas y consumo en fabricación. Cobertura = stock a mano / demanda diaria prevista. Plazo de entrega = el del proveedor en Odoo o el valor por defecto.
+- La demanda incluye ventas y consumo en fabricación. Cobertura = stock a mano / demanda diaria prevista. Plazo de entrega = el del proveedor en el ERP o el valor por defecto.{ERP_NOTES}
 - Si el panel está en MODO DEMO, menciónalo una vez: los datos no son en vivo."""
 
 
+ERP_NOTES = {
+    "odoo": "",
+    "holded": (" En Holded: la demanda sale de los albaranes (y del consumo de las órdenes de producción terminadas), "
+               "el mínimo es el «stock mínimo» del producto, la categoría es la primera etiqueta del producto y "
+               "Holded no guarda plazos de proveedor, así que se usa el plazo por defecto."),
+}
+
+
 def system_prompt() -> str:
+    sec = config.section()
+    tools = "consulta_odoo / agregado_odoo" if sec == "odoo" else "consulta_holded"
+    base = (SYSTEM_BASE.replace("{ERP_TOOLS}", tools).replace("{ERP_NOTES}", ERP_NOTES[sec])
+            .replace("{ERP}", config.erp_name()))
     ctx = (config.load_settings().get("contexto_empresa") or "").strip()
-    return SYSTEM_BASE + (f"\n\nContexto de la empresa:\n{ctx}" if ctx else "")
+    return base + (f"\n\nContexto de la empresa:\n{ctx}" if ctx else "")
 
 
 TOOLS = [
@@ -134,10 +146,29 @@ TOOLS = [
          "kind": {"type": "string", "enum": list(alerts_mod.AUTO_KINDS) + ["*"]},
          "active": {"type": "boolean"},
          "severity": {"type": "string", "enum": ["auto"] + alerts_mod.SEVERITIES},
-         "add_exclusions": {"type": "object", "properties": {"products": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas"}, "categories": {"type": "array", "items": {"type": "string"}, "description": "Categorías de producto de Odoo"}, "families": {"type": "array", "items": {"type": "string"}, "description": "Prefijos de referencia (BOX, ENV, MC…)"}}, "additionalProperties": False},
-         "remove_exclusions": {"type": "object", "properties": {"products": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas"}, "categories": {"type": "array", "items": {"type": "string"}, "description": "Categorías de producto de Odoo"}, "families": {"type": "array", "items": {"type": "string"}, "description": "Prefijos de referencia (BOX, ENV, MC…)"}}, "additionalProperties": False}},
+         "add_exclusions": {"type": "object", "properties": {"products": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas"}, "categories": {"type": "array", "items": {"type": "string"}, "description": "Categorías de producto (en Holded, la primera etiqueta)"}, "families": {"type": "array", "items": {"type": "string"}, "description": "Prefijos de referencia (BOX, ENV, MC…)"}}, "additionalProperties": False},
+         "remove_exclusions": {"type": "object", "properties": {"products": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas"}, "categories": {"type": "array", "items": {"type": "string"}, "description": "Categorías de producto (en Holded, la primera etiqueta)"}, "families": {"type": "array", "items": {"type": "string"}, "description": "Prefijos de referencia (BOX, ENV, MC…)"}}, "additionalProperties": False}},
          "required": ["kind"], "additionalProperties": False}},
 ]
+
+HOLDED_TOOL = {
+    "name": "consulta_holded",
+    "description": "GET de SOLO LECTURA a la API v2 de Holded. path relativo a /api/v2 que empiece por: " +
+                   ", ".join(holded.ALLOWED_PREFIXES) + " (p. ej. 'purchase-orders', 'waybills', 'products/{id}/stock', "
+                   "'warehouses/{id}/stock', 'contacts/{id}'). params: filtros de la API (start_date, end_date en ISO "
+                   "AAAA-MM-DD, status, contact_id, sort, limit ≤ 200, cursor). Importes y unidades de documentos llevan "
+                   "coma decimal.",
+    "input_schema": {"type": "object", "properties": {
+        "path": {"type": "string"},
+        "params": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}}},
+        "required": ["path"], "additionalProperties": False}}
+ODOO_ONLY = {"consulta_odoo", "agregado_odoo"}
+
+
+def tools_for_section():
+    if config.section() == "holded":
+        return [t for t in TOOLS if t["name"] not in ODOO_ONLY] + [HOLDED_TOOL]
+    return TOOLS
 
 
 class AIUnavailable(Exception):
@@ -236,6 +267,17 @@ def run_tool(name, args, ctx):
         if args.get("tipo"):
             res = [a for a in res if a["kind"] == args["tipo"]]
         return {"total": len(res), "alertas": res[: args.get("limite") or 50]}
+    if name == "consulta_holded":
+        if snap["source"] != "holded":
+            return {"error": "Sin conexión con Holded (modo demo o token no válido). Usa las herramientas del panel."}
+        path = str(args.get("path") or "").strip().lstrip("/")
+        path = path[len("api/v2/"):] if path.startswith("api/v2/") else path
+        if not path.startswith(holded.ALLOWED_PREFIXES) or ".." in path or "?" in path:
+            return {"error": f"Ruta no permitida. Empieza por: {', '.join(holded.ALLOWED_PREFIXES)}"}
+        params = {k: v for k, v in (args.get("params") or {}).items() if isinstance(v, (str, int, float, bool))}
+        if "limit" in params:
+            params["limit"] = max(1, min(int(float(params["limit"])), 200))
+        return data.client().get(path, params)
     if name in ("consulta_odoo", "agregado_odoo"):
         if snap["source"] != "odoo":
             return {"error": "Sin conexión con Odoo (modo demo o credenciales caducadas). Usa las herramientas del panel."}
@@ -327,7 +369,7 @@ def _exec_tools(calls, ctx):
 
 def _openai_tools():
     return [{"type": "function", "function": {"name": t["name"], "description": t["description"],
-                                               "parameters": t["input_schema"]}} for t in TOOLS]
+                                               "parameters": t["input_schema"]}} for t in tools_for_section()]
 
 
 def _run_openai(c, messages, ctx):
@@ -385,7 +427,7 @@ def _run_anthropic(c, messages, ctx, effort):
         kw.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
     msgs = list(messages)
     for _ in range(MAX_TURNS):
-        resp = client.beta.messages.create(model=model, max_tokens=16000, system=system_prompt(), tools=TOOLS,
+        resp = client.beta.messages.create(model=model, max_tokens=16000, system=system_prompt(), tools=tools_for_section(),
                                            messages=msgs, cache_control={"type": "ephemeral"}, **kw)
         ctx["model"] = resp.model
         ctx["usage"]["prompt_tokens"] += resp.usage.input_tokens or 0
@@ -435,7 +477,7 @@ Exceso y stock sin movimiento con mayor valor, y qué hacer.
 ## Señales a vigilar
 Anomalías de demanda, compras retrasadas, caducidades y problemas de datos (p. ej., productos sin coste o sin proveedor).
 
-Consulta las herramientas que necesites (empieza por resumen_inventario) y, si hace falta confirmar algo, pregunta directamente a Odoo."""
+Consulta las herramientas que necesites (empieza por resumen_inventario) y, si hace falta confirmar algo, consulta directamente el ERP."""
 
 
 def summary():

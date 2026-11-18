@@ -15,6 +15,10 @@
     <h1>Inventario</h1>
     <span class="sub" id="app-version"></span>
   </div>
+  <nav id="section-switch" class="section-switch" aria-label="Sección" hidden>
+    <button data-section="odoo" aria-pressed="false">Odoo</button>
+    <button data-section="holded" aria-pressed="false">Holded</button>
+  </nav>
   <div class="status">
     <span id="source" class="badge">…</span>
     <span id="updated" class="muted"></span>
@@ -61,7 +65,7 @@
           <button id="gen-summary" class="btn primary">Generar resumen</button>
         </div>
       </div>
-      <div id="summary" class="md muted">Pulsa «Generar resumen»: la IA revisa el inventario, consulta Odoo si lo necesita y te dice qué pedir, qué riesgos hay y dónde hay dinero parado.</div>
+      <div id="summary" class="md muted">Pulsa «Generar resumen»: la IA revisa el inventario, consulta <span class="erp">Odoo</span> si lo necesita y te dice qué pedir, qué riesgos hay y dónde hay dinero parado.</div>
     </div>
 
     <div class="grid2">
@@ -163,7 +167,7 @@
     <div class="card chat">
       <div id="chat-log" class="chat-log">
         <div class="msg assistant md">
-          <p>Hola. Pregúntame lo que quieras del inventario: consulto el panel y, si hace falta, lanzo la consulta directamente a Odoo (solo lectura). También puedo prepararte alertas.</p>
+          <p>Hola. Pregúntame lo que quieras del inventario: consulto el panel y, si hace falta, lanzo la consulta directamente a <span class="erp">Odoo</span> (solo lectura). También puedo prepararte alertas.</p>
         </div>
       </div>
       <div class="suggestions" id="suggestions"></div>
@@ -187,11 +191,11 @@
     <div class="card muted small">
       <h2>Cómo se calcula</h2>
       <ul>
-        <li><b>Demanda</b>: entregas a clientes + consumo en fabricación (movimientos hechos en Odoo), menos devoluciones, por semana.</li>
+        <li><b>Demanda</b>: salidas a clientes + consumo en fabricación, por semana. En Odoo, movimientos de stock hechos (menos devoluciones); en Holded, albaranes y órdenes de producción terminadas.</li>
         <li><b>Previsión</b>: Holt amortiguado para demanda regular (con estacionalidad si hay ≥ 18 meses y mejora el backtest) o Croston-SBA si es intermitente. Precisión = 1 − WAPE en bloques de 4 semanas sobre las últimas 12 semanas reservadas.</li>
         <li><b>Cobertura</b> = stock a mano / demanda diaria prevista. <b>Stock de seguridad</b> = z · σ semanal · √(plazo/7). <b>Punto de pedido</b> = demanda diaria · plazo + seguridad.</li>
         <li><b>Cantidad sugerida</b> = punto de pedido + demanda del periodo de revisión − stock previsto, redondeada al mínimo del proveedor y al múltiplo de la regla.</li>
-        <li>El panel solo <b>lee</b> Odoo. Las alertas personalizadas y las marcadas como vistas se guardan en el propio panel.</li>
+        <li>El panel solo <b>lee</b> <span class="erp">Odoo</span>. Las alertas personalizadas y las marcadas como vistas se guardan en el propio panel, en cada sección por separado.</li>
       </ul>
     </div>
   </section>
@@ -203,10 +207,10 @@
     <div class="setup-head">
       <div>
         <h2 id="setup-title">Configura tu panel</h2>
-        <p class="muted small" id="setup-sub">Conecta tu Odoo y elige el modelo de IA del asistente. Solo se hace una vez.</p>
+        <p class="muted small" id="setup-sub">Conecta <span class="erp">Odoo</span> y elige el modelo de IA del asistente de esta sección. Solo se hace una vez.</p>
       </div>
       <ol class="stepper" aria-label="Pasos">
-        <li data-step="1" aria-current="step"><span>1</span> Odoo</li>
+        <li data-step="1" aria-current="step"><span>1</span> <span class="erp">Odoo</span></li>
         <li data-step="2"><span>2</span> Asistente IA</li>
       </ol>
     </div>
@@ -216,7 +220,7 @@
     </div>
 
     <!-- Paso 1: Odoo -->
-    <fieldset class="step" data-step="1">
+    <fieldset class="step" data-step="1" data-erp="odoo">
       <legend class="sr">Conexión con Odoo</legend>
       <label>Dirección de Odoo
         <input name="odoo_url" type="url" placeholder="https://miempresa.odoo.com" autocomplete="url">
@@ -238,6 +242,21 @@
         <span class="test-msg" id="test-odoo-msg" role="status"></span>
       </div>
       <p class="small muted">El panel solo <b>lee</b> Odoo: no puede crear ni modificar nada. Verás lo mismo que tu usuario puede ver en Odoo.</p>
+    </fieldset>
+
+    <!-- Paso 1: Holded -->
+    <fieldset class="step" data-step="1" data-erp="holded" hidden>
+      <legend class="sr">Conexión con Holded</legend>
+      <label>Token de la API de Holded
+        <span class="pw"><input name="holded_key" type="password" autocomplete="off" spellcheck="false" placeholder="pat_…_…"><button type="button" class="link" data-toggle-pw>Mostrar</button></span>
+        <span class="hint">En Holded: <b>Ajustes → Desarrolladores → API → Crear token</b>. Debe empezar por «pat_» (las claves antiguas de la API v1 ya no funcionan).
+          Basta con permisos de <b>lectura</b>: productos, almacenes, albaranes, pedidos de compra, órdenes de producción y contactos.</span>
+      </label>
+      <div class="test-row">
+        <button type="button" class="btn" id="test-holded">Probar conexión</button>
+        <span class="test-msg" id="test-holded-msg" role="status"></span>
+      </div>
+      <p class="small muted">El panel solo <b>lee</b> Holded: no puede crear ni modificar nada. Holded permite unas 100 consultas por minuto, así que la primera carga de datos puede tardar un poco.</p>
     </fieldset>
 
     <!-- Paso 2: IA -->
@@ -271,9 +290,9 @@
       <label>Modelo
         <select name="model" id="model-select" disabled><option>Pulsa «Probar y cargar modelos»</option></select>
         <span class="hint" id="model-info"></span>
-        <span class="hint">Los modelos que no pueden usar herramientas aparecen desactivados: el asistente las necesita para consultar Odoo.</span>
+        <span class="hint">Los modelos que no pueden usar herramientas aparecen desactivados: el asistente las necesita para consultar <span class="erp">Odoo</span>.</span>
       </label>
-      <p class="small muted">Las claves se guardan en el <b>Llavero de macOS</b>. Las consultas van directamente de tu Mac a Odoo y al proveedor que elijas, sin pasar por ningún otro servidor.
+      <p class="small muted">Las claves se guardan en el <b>Llavero de macOS</b>. Las consultas van directamente de tu Mac a <span class="erp">Odoo</span> y al proveedor que elijas, sin pasar por ningún otro servidor.
         Lo que preguntes al asistente, y los datos que consulte para responder, se envían a ese proveedor.</p>
     </fieldset>
 

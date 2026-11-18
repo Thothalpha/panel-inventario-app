@@ -10,18 +10,23 @@ import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
-from . import config, credentials
+from . import config, credentials, holded
 from .odoo_client import OdooReadOnly, detect_db
 
+# Cada sección (Odoo, Holded) tiene su propia caché de datos y su propio cliente
 _lock = threading.Lock()
-_cache = {"snapshot": None, "ts": 0.0}
-_client = None
+_caches: dict = {}
+_clients: dict = {}
 
 DEMAND_DEST = ["customer", "production"]
 
 
 class NotConfigured(Exception):
-    """Falta configurar la conexión con Odoo."""
+    """Falta configurar la conexión con el ERP de la sección."""
+
+
+def _cache():
+    return _caches.setdefault(config.section(), {"snapshot": None, "ts": 0.0})
 
 
 def make_client(url, db, user, key) -> OdooReadOnly:
@@ -29,14 +34,16 @@ def make_client(url, db, user, key) -> OdooReadOnly:
     return OdooReadOnly(url=url, db=db, user=user, api_key=key)
 
 
-def client() -> OdooReadOnly:
-    global _client
-    if _client is None:
+def client():
+    """Cliente de solo lectura del ERP de la sección actual (OdooReadOnly u HoldedReadOnly)."""
+    sec = config.section()
+    if sec not in _clients:
         c = credentials.get()
-        if not credentials.odoo_configured(c):
-            raise NotConfigured("Configura la conexión con Odoo")
-        _client = make_client(c["odoo_url"], c["odoo_db"], c["odoo_user"], c["odoo_key"])
-    return _client
+        if not credentials.erp_configured(c):
+            raise NotConfigured(f"Configura la conexión con {config.erp_name()}")
+        _clients[sec] = make_client(c["odoo_url"], c["odoo_db"], c["odoo_user"], c["odoo_key"]) if sec == "odoo" \
+            else holded.HoldedReadOnly(c["holded_key"])
+    return _clients[sec]
 
 
 ACCESS_CHECKS = {
@@ -62,11 +69,10 @@ def test_connection(url, db, user, key) -> dict:
 
 
 def reset():
-    """Tras cambiar la conexión: nuevo cliente y datos frescos."""
-    global _client
+    """Tras cambiar la conexión de la sección actual: nuevo cliente y datos frescos."""
     with _lock:
-        _client = None
-        _cache.update(snapshot=None, ts=0.0)
+        _clients.pop(config.section(), None)
+        _caches.pop(config.section(), None)
 
 
 # ---------------------------------------------------------------- semanas
@@ -362,16 +368,20 @@ def fetch_demo() -> dict:
 # ---------------------------------------------------------------- caché
 def get_snapshot(force: bool = False) -> dict:
     with _lock:
-        fresh = time.time() - _cache["ts"] < config.CACHE_TTL_SECONDS
-        if _cache["snapshot"] is not None and fresh and not force:
-            return _cache["snapshot"]
+        cache = _cache()
+        fresh = time.time() - cache["ts"] < config.CACHE_TTL_SECONDS
+        if cache["snapshot"] is not None and fresh and not force:
+            return cache["snapshot"]
         if config.DEMO_MODE and config.env("DEMO_SOURCE") == "ficticio":
             from .demo_ficticio import build
             snap = build()
         elif config.DEMO_MODE:
             snap = fetch_demo()
+        elif config.section() == "holded":
+            s = config.load_settings()
+            snap = holded.fetch_snapshot(client(), week_grid(s["semanas_historia"]), [])
         else:
             # Sin respaldo a datos de demo: en el Mac del usuario serían datos que no son suyos
             snap = fetch_from_odoo()
-        _cache.update(snapshot=snap, ts=time.time())
+        cache.update(snapshot=snap, ts=time.time())
         return snap

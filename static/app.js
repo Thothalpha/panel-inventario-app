@@ -16,7 +16,7 @@ const css = name => getComputedStyle(document.documentElement).getPropertyValue(
 
 const SEV = { critica: { label: "Crítica", ico: "⛔" }, alta: { label: "Alta", ico: "▲" }, media: { label: "Media", ico: "●" }, baja: { label: "Baja", ico: "○" } };
 const KIND = {
-  rotura: "Sin stock", riesgo_rotura: "Riesgo de rotura", bajo_minimo: "Bajo mínimo Odoo", punto_pedido: "Bajo punto de pedido",
+  rotura: "Sin stock", riesgo_rotura: "Riesgo de rotura", bajo_minimo: "Bajo stock mínimo", punto_pedido: "Bajo punto de pedido",
   exceso: "Exceso", sin_movimiento: "Sin movimiento", negativo: "Stock negativo", anomalia: "Anomalía de demanda",
   compra_retrasada: "Compra retrasada", caducidad: "Caducidad",
 };
@@ -93,6 +93,11 @@ async function staticApi(path, opts = {}) {
   throw new Error("No disponible en la demo: " + path);
 }
 
+/* Sección activa (Odoo / Holded): cada una con su conexión, datos, alertas y asistente */
+const SECTIONS = { odoo: "Odoo", holded: "Holded" };
+let SECTION = (() => { try { const v = localStorage.getItem("inv-section"); return SECTIONS[v] ? v : "odoo"; } catch { return "odoo"; } })();
+const ERP = () => SECTIONS[SECTION];
+
 /* Token de sesión de la app de escritorio: llega en el fragmento (#t=…), que nunca se envía al servidor */
 const APP_TOKEN = (() => {
   const m = location.hash.match(/[#&]t=([^&]+)/);
@@ -106,7 +111,7 @@ const APP_TOKEN = (() => {
 
 async function api(path, opts = {}) {
   if (STATIC) return staticApi(path, opts);
-  const headers = { "Content-Type": "application/json", ...(APP_TOKEN ? { "X-App-Token": APP_TOKEN } : {}) };
+  const headers = { "Content-Type": "application/json", "X-Section": SECTION, ...(APP_TOKEN ? { "X-App-Token": APP_TOKEN } : {}) };
   const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
     let msg = r.statusText;
@@ -146,7 +151,9 @@ function render() {
   const d = state.data;
   const live = d.source === "odoo";
   $("#source").className = "badge " + (live ? "live" : "demo");
-  $("#source").textContent = live ? "Odoo en vivo" : (STATIC ? "Demo · datos ficticios" : "Modo demo");
+  const live2 = d.source === "odoo" || d.source === "holded";
+  $("#source").className = "badge " + (live2 ? "live" : "demo");
+  $("#source").textContent = live2 ? `${ERP()} en vivo` : (STATIC ? "Demo · datos ficticios" : "Modo demo");
   $("#refresh").hidden = STATIC;
   $("#review").hidden = !STATIC || LS.get("review-closed", false);
   $("#updated").textContent = "Datos de " + new Date(d.generated_at).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
@@ -267,7 +274,7 @@ function showSummary(content, when, model) {
 $("#gen-summary").addEventListener("click", async () => {
   const b = $("#gen-summary");
   b.disabled = true;
-  $("#summary").innerHTML = `<span class="spinner"></span>Analizando el inventario y consultando Odoo… (puede tardar un minuto)`;
+  $("#summary").innerHTML = `<span class="spinner"></span>Analizando el inventario y consultando ${esc(ERP())}… (puede tardar un minuto)`;
   try {
     const r = await api("/api/ai/summary", { method: "POST" });
     showSummary(r.text, new Date().toISOString(), r.model);
@@ -340,7 +347,7 @@ async function openDetail(pid) {
     ["Stock a mano", fmt(m.on_hand)], ["Previsto", fmt(m.virtual)], ["Demanda prevista 30 d", fmt(m.forecast_30d)],
     ["Cobertura", m.coverage_days === null ? "—" : fmt(m.coverage_days) + " d"], ["Rotura estimada", fmtDate(m.stockout_date)],
     ["Plazo de entrega", fmt(m.lead_time_days) + " d"], ["Stock de seguridad", fmt(m.safety_stock)], ["Punto de pedido", fmt(m.reorder_point)],
-    ["Cantidad sugerida", fmt(m.suggested_order)], ["Mín/Máx Odoo", m.orderpoint_min === null ? "sin regla" : `${fmt(m.orderpoint_min)} / ${fmt(m.orderpoint_max)}`],
+    ["Cantidad sugerida", fmt(m.suggested_order)], [`Mínimo ${ERP()}`, m.orderpoint_min === null ? "sin definir" : fmt(m.orderpoint_min) + (m.orderpoint_max ? ` / máx. ${fmt(m.orderpoint_max)}` : "")],
     ["Clase", `${m.abc}${m.xyz || ""}`], ["Valor", fmtEur(m.value)],
   ];
   $("#d-kpis").innerHTML = tiles.map(([l, v]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
@@ -793,7 +800,7 @@ async function sendChat(text) {
 
 /* ---------------------------------------------------------------- config */
 const SETTING_LABELS = {
-  plazo_entrega_defecto_dias: "Plazo de entrega por defecto (días) — si el proveedor no lo tiene en Odoo",
+  plazo_entrega_defecto_dias: "Plazo de entrega por defecto (días) — si el ERP no tiene el del proveedor",
   nivel_servicio: "Nivel de servicio (0,80–0,99) para el stock de seguridad",
   periodo_revision_dias: "Periodo de revisión de compras (días)",
   semanas_historia: "Semanas de historia para la previsión",
@@ -865,11 +872,13 @@ function setupFill() {
     if (saved?.provider) sf().querySelector(`input[name=provider][value=${saved.provider}]`).checked = true;
   } else {
     const st = setup.status || { odoo: {}, ai: {} };
-    f.odoo_url.value = st.odoo.url || "";
-    f.odoo_db.value = st.odoo.db || "";
-    f.odoo_user.value = st.odoo.user || "";
+    f.odoo_url.value = st.odoo?.url || "";
+    f.odoo_db.value = st.odoo?.db || "";
+    f.odoo_user.value = st.odoo?.user || "";
     f.odoo_key.value = "";
-    f.odoo_key.placeholder = st.odoo.has_key ? "Guardada en el Llavero · déjala vacía para conservarla" : "Pega aquí tu API key de Odoo";
+    f.odoo_key.placeholder = st.odoo?.has_key ? "Guardada en el Llavero · déjala vacía para conservarla" : "Pega aquí tu API key de Odoo";
+    f.holded_key.value = "";
+    f.holded_key.placeholder = st.holded?.has_key ? "Guardado en el Llavero · déjalo vacío para conservarlo" : "pat_…_…";
     f.ai_key.value = "";
     const prov = st.ai.provider || "openrouter";
     sf().querySelector(`input[name=provider][value=${prov}]`).checked = true;
@@ -879,6 +888,8 @@ function setupFill() {
     $("#setup-skip").textContent = "Cancelar";
   }
   setMsg($("#test-odoo-msg"), "", "");
+  setMsg($("#test-holded-msg"), "", "");
+  setup.holdedAccount = setup.status?.holded?.account || "";
   providerChanged();
 }
 
@@ -902,7 +913,7 @@ function providerChanged() {
 
 function setupStep(n) {
   setup.step = n;
-  $$("#setup .step").forEach(s => s.hidden = +s.dataset.step !== n);
+  $$("#setup .step").forEach(s => s.hidden = +s.dataset.step !== n || (s.dataset.erp && s.dataset.erp !== SECTION));
   $$("#setup .stepper li").forEach(li => {
     const k = +li.dataset.step;
     li.toggleAttribute("aria-current", k === n);
@@ -924,6 +935,23 @@ async function fakeTest(btn, msg, okText) {
   await new Promise(r => setTimeout(r, 900));
   setMsg(msg, "ok", esc(okText)); btn.disabled = false;
 }
+
+/* ---- Holded */
+$("#test-holded").addEventListener("click", async () => {
+  const btn = $("#test-holded"), msg = $("#test-holded-msg"), f = sf().elements;
+  btn.disabled = true; setMsg(msg, "", `<span class="spinner"></span>Conectando con Holded…`);
+  try {
+    const r = await api("/api/setup/holded/test", { method: "POST", body: JSON.stringify({ key: f.holded_key.value }) });
+    const denied = Object.entries(r.access).filter(([, v]) => !v).map(([k]) => k);
+    setup.odooOk = true;
+    setup.holdedAccount = r.account || "";
+    setMsg(msg, "ok", `Conectado a Holded (${esc(r.version)})${r.account ? ` · cuenta <b>${esc(r.account)}</b>` : ""}` +
+      (denied.length ? `<br><span class="warn-inline">El token no tiene permiso de lectura en: ${esc(denied.join(", "))}. Esas partes del panel saldrán vacías.</span>` : ""));
+  } catch (e) {
+    setup.odooOk = false;
+    setMsg(msg, "err", esc(e.message));
+  } finally { btn.disabled = false; }
+});
 
 /* ---- Odoo */
 $("#test-odoo").addEventListener("click", async () => {
@@ -1032,7 +1060,8 @@ $("#setup-next").addEventListener("click", async () => {
   const f = sf().elements, sel = $("#model-select");
   if (setup.step === 1) {
     if (!STATIC && !setup.odooOk) {
-      setMsg($("#test-odoo-msg"), "err", "Pulsa «Probar conexión» y comprueba que Odoo responde antes de seguir.");
+      setMsg($(SECTION === "holded" ? "#test-holded-msg" : "#test-odoo-msg"), "err",
+        `Pulsa «Probar conexión» y comprueba que ${esc(ERP())} responde antes de seguir.`);
       return;
     }
     return setupStep(2);
@@ -1052,9 +1081,11 @@ $("#setup-next").addEventListener("click", async () => {
   const btn = $("#setup-next");
   btn.disabled = true;
   try {
+    const erp = SECTION === "holded"
+      ? { holded: { key: f.holded_key.value, account: setup.holdedAccount || "" } }
+      : { odoo: { url: f.odoo_url.value, db: f.odoo_db.value, user: f.odoo_user.value, key: f.odoo_key.value } };
     setup.status = await api("/api/setup/save", { method: "POST", body: JSON.stringify({
-      odoo: { url: f.odoo_url.value, db: f.odoo_db.value, user: f.odoo_user.value, key: f.odoo_key.value },
-      ai: { provider: f.provider.value, model: sel.value, base_url: f.base_url.value, key: f.ai_key.value },
+      ...erp, ai: { provider: f.provider.value, model: sel.value, base_url: f.base_url.value, key: f.ai_key.value },
     }) });
     $("#setup").close();
     await refreshConnection();
@@ -1079,16 +1110,19 @@ function renderConnection() {
     if (s) c = { odoo: s.odoo, user: s.user + " · solo lectura · ejemplo", provider: PROVIDERS[s.provider].name, model: s.model };
   } else if (setup.status?.configured) {
     const st = setup.status;
-    c = { odoo: st.odoo.url, user: `${st.odoo.user} · base de datos ${st.odoo.db || "detectada"} · solo lectura`,
+    c = st.section === "holded"
+      ? { odoo: st.holded.account || "Cuenta de Holded", user: "API v2 · token en el Llavero · solo lectura",
+          provider: st.ai.provider_name, model: st.ai.model }
+      : { odoo: st.odoo.url, user: `${st.odoo.user} · base de datos ${st.odoo.db || "detectada"} · solo lectura`,
           provider: st.ai.provider_name, model: st.ai.model };
     const u = st.usage_month;
     usage = `<div class="kpi"><div class="label">Uso de la IA este mes</div><div class="value">${u.preguntas} preguntas</div>
       <div class="hint">${u.coste ? usd(u.coste) : "0 $"}${u.sin_coste ? ` · ${u.sin_coste} sin coste informado por el proveedor` : ""} · ${new Intl.NumberFormat("es-ES").format(u.tokens)} tokens</div></div>`;
   }
   chip.classList.toggle("off", !c);
-  chip.textContent = c ? `Odoo · ${c.provider}` : "Configurar conexión";
+  chip.textContent = c ? `${ERP()} · ${c.provider}` : `Configurar ${ERP()}`;
   $("#conn-summary").innerHTML = c ? `
-    <div class="kpi"><div class="label">Odoo</div><div class="value">${esc(c.odoo)}</div><div class="hint">${esc(c.user)}</div></div>
+    <div class="kpi"><div class="label">${esc(ERP())}</div><div class="value">${esc(c.odoo)}</div><div class="hint">${esc(c.user)}</div></div>
     <div class="kpi"><div class="label">Asistente IA</div><div class="value">${esc(c.provider)}</div><div class="hint">${esc(c.model)}</div></div>${usage}`
     : `<p class="muted small">Aún no has configurado la conexión. Pulsa «Cambiar conexión».</p>`;
 }
@@ -1120,8 +1154,10 @@ async function checkVersion() {
 const TOUR = [
   { title: "Bienvenido a Panel Inventario",
     text: "En un par de minutos te enseño todo lo que puedes hacer: ver el estado del inventario, saber qué pedir, decidir qué alertas quieres y preguntar a la IA. Usa «Siguiente» o las flechas del teclado; puedes salir cuando quieras." },
+  { target: "#section-switch", title: "Dos secciones: Odoo y Holded",
+    text: "Cada sección es independiente: su propia conexión, sus datos, sus alertas, su asistente y su gasto de IA. Cambia de una a otra con estos botones." },
   { tab: "resumen", target: "#kpis", title: "Los indicadores clave",
-    text: "Valor del stock, rotación, alertas urgentes, cuánto hay que pedir, exceso, stock parado y compras en curso. Se calculan con tus datos de Odoo cada vez que abres la app o pulsas «Actualizar»." },
+    text: "Valor del stock, rotación, alertas urgentes, cuánto hay que pedir, exceso, stock parado y compras en curso. Se calculan con tus datos de {ERP} cada vez que abres la app o pulsas «Actualizar»." },
   { tab: "resumen", target: ".ai-card", title: "Resumen con IA",
     text: "Pulsa «Generar resumen» y el asistente revisa todo el inventario y te dice en una página qué pedir, qué riesgos hay y dónde hay dinero parado. Ideal para empezar la semana." },
   { tab: "resumen", target: () => $("#ch-coverage")?.closest(".card"), title: "Gráficos",
@@ -1133,7 +1169,7 @@ const TOUR = [
   { tab: "alertas", target: "#alert-filters", title: "Tus alertas, por urgencia",
     text: "Filtra por severidad: crítica, alta, media o baja. El número rojo de la pestaña son las críticas y altas que aún no has visto." },
   { tab: "alertas", target: () => $("#a-search")?.closest(".filters"), title: "Filtra por tipo, categoría o familia",
-    text: "Encuentra rápido las alertas de una categoría de Odoo o de una familia de referencia (BOX, ENV, MC…). «Marcar visibles como vistas» las archiva todas de golpe; vuelven a salir pasados unos días si el problema sigue." },
+    text: "Encuentra rápido las alertas de una categoría o de una familia de referencia (BOX, ENV, MC…). «Marcar visibles como vistas» las archiva todas de golpe; vuelven a salir pasados unos días si el problema sigue." },
   { tab: "alertas", target: () => $("#alert-list .alert") || $("#alert-list"), title: "Cada alerta",
     text: "Te dice qué pasa, qué hacer y su impacto. En «Opciones» puedes dejar de recibir avisos de ese producto (solo de ese tipo o de ninguno) o configurar ese tipo de alerta." },
   { tab: "alertas", target: "#auto-config-card", title: "Tú decides qué alertas quieres",
@@ -1143,15 +1179,15 @@ const TOUR = [
   { tab: "alertas", target: "#rules-card", title: "Tus propias alertas",
     text: "Crea alertas a tu medida con «+ Nueva alerta» (por ejemplo, «avísame si las cajas de Cronidol bajan de 5.000»), o escríbelo y pulsa «Pedir a la IA». Puedes editarlas, pausarlas o eliminarlas cuando quieras." },
   { tab: "asistente", target: "#chat-form", title: "Pregunta lo que quieras",
-    text: "El asistente consulta el panel y tu Odoo (solo lectura) para responder: qué pedir esta semana, cómo va un producto, qué compras están retrasadas… También puede crear, cambiar o eliminar alertas por ti: siempre te enseña el cambio y tú lo aplicas con un botón." },
+    text: "El asistente consulta el panel y {ERP} (solo lectura) para responder: qué pedir esta semana, cómo va un producto, qué compras están retrasadas… También puede crear, cambiar o eliminar alertas por ti: siempre te enseña el cambio y tú lo aplicas con un botón." },
   { tab: "asistente", target: "#suggestions", title: "Ideas para empezar",
     text: "Pulsa cualquiera de estas preguntas de ejemplo. Debajo de cada respuesta verás qué consultas ha hecho y cuánto ha costado." },
   { tab: "config", target: "#settings-form", title: "Ajusta la app a tu forma de trabajar",
     text: "Plazo de entrega por defecto, nivel de servicio, umbrales de alertas… Y en «Contexto de la empresa» cuéntale al asistente cómo trabajáis: sus respuestas mejorarán mucho." },
   { target: "#conn-chip", title: "Tu conexión",
-    text: "Aquí cambias la conexión con Odoo o el modelo de IA. En Configuración → Conexiones verás también cuánto llevas gastado en IA este mes." },
+    text: "Aquí cambias la conexión con {ERP} o el modelo de IA de esta sección. En Configuración → Conexiones verás también cuánto llevas gastado en IA este mes." },
   { target: "#refresh", title: "Datos al día",
-    text: "La app vuelve a leer Odoo cada 15 minutos; pulsa «Actualizar» si acabas de hacer cambios en Odoo y quieres verlos ya." },
+    text: "La app vuelve a leer {ERP} cada 15 minutos; pulsa «Actualizar» si acabas de hacer cambios en {ERP} y quieres verlos ya." },
   { target: "#tour-btn", title: "¡Listo!",
     text: "Puedes volver a ver esta guía cuando quieras desde este botón. Cuando haya una versión nueva de la app, te avisará arriba con las instrucciones para actualizar." },
 ];
@@ -1202,7 +1238,7 @@ function tourGo(i) {
   if (step.tab) showTab(step.tab);
   $("#tour-step").textContent = `Paso ${tour.i + 1} de ${TOUR.length}`;
   $("#tour-title").textContent = step.title;
-  $("#tour-text").textContent = step.text;
+  $("#tour-text").textContent = step.text.replaceAll("{ERP}", ERP());
   $("#tour-prev").disabled = tour.i === 0;
   $("#tour-next").textContent = tour.i === TOUR.length - 1 ? "Terminar" : "Siguiente →";
   const el = tourTarget(step);
@@ -1257,17 +1293,46 @@ async function start() {
   if (STATIC) {
     renderConnection();
     if (!LS.get("setup-seen", false)) openSetup();
-    start();
+    load(); loadRules(); loadSettings();
     return;
   }
+  applySectionUI();
   await refreshConnection();
   loadRules(); loadSettings(); loadAlertConfig(); checkVersion();
   if (setup.status?.configured) { await load(); maybeTour(); }
   else {
-    $("#warnings").innerHTML = `<div class="warn">Configura la conexión con Odoo y el proveedor de IA para empezar.</div>`;
+    $("#warnings").innerHTML = `<div class="warn">Configura la conexión con ${esc(ERP())} y el proveedor de IA de esta sección para empezar.</div>`;
     openSetup();
   }
 }
+
+function applySectionUI() {
+  document.body.dataset.section = SECTION;
+  $("#section-switch").hidden = STATIC;
+  $$("#section-switch button").forEach(b => b.setAttribute("aria-pressed", b.dataset.section === SECTION));
+  $$(".erp").forEach(e => e.textContent = ERP());
+  $("#conn-chip").title = `Conexión con ${ERP()} y proveedor de IA`;
+  $("#refresh").title = `Volver a leer ${ERP()}`;
+}
+async function switchSection(sec) {
+  if (sec === SECTION || !SECTIONS[sec]) return;
+  SECTION = sec;
+  try { localStorage.setItem("inv-section", sec); } catch {}
+  // Todo lo que se ve es de la sección anterior: se vacía antes de cargar la nueva
+  state.data = null; state.rules = null; state.acfg = null; state.chat = []; setup.status = null;
+  $$("dialog[open]").forEach(d => d.close());
+  $("#warnings").innerHTML = "";
+  $("#summary").classList.add("muted");
+  $("#summary").textContent = "Pulsa «Generar resumen» para que la IA revise el inventario de esta sección.";
+  $("#summary-meta").textContent = "";
+  $("#chat-log").innerHTML = `<div class="msg assistant md"><p>Hola. Pregúntame lo que quieras del inventario de ${esc(ERP())}: consulto el panel y, si hace falta, lanzo la consulta directamente a ${esc(ERP())} (solo lectura). También puedo gestionar tus alertas.</p></div>`;
+  $("#nl-rule-out").innerHTML = "";
+  ["#kpis", "#alert-list", "#products", "#top-demand", "#auto-config", "#rules", "#global-excl"].forEach(sel => { const el = $(sel); if (el) el.innerHTML = ""; });
+  $("#alert-count").textContent = "";
+  $("#source").textContent = "…"; $("#updated").textContent = "";
+  await start();
+}
+$$("#section-switch button").forEach(b => b.addEventListener("click", () => switchSection(b.dataset.section)));
 
 $("#review-close").addEventListener("click", () => { $("#review").hidden = true; LS.set("review-closed", true); });
 start();
