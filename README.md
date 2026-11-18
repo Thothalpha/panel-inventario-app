@@ -5,8 +5,6 @@ previsión de demanda, la cobertura y el punto de pedido de cada producto, gener
 de IA** que responde preguntas consultando Odoo en el momento. Tú eliges el proveedor del modelo: OpenRouter, OpenAI,
 Anthropic o cualquier servidor compatible con la API de OpenAI.
 
-**Demo con datos ficticios:** https://thothalpha.github.io/panel-inventario/
-
 ## Qué hace
 
 | Pestaña | Contenido |
