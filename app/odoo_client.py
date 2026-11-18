@@ -74,8 +74,27 @@ def detect_db(url: str) -> str:
         pass  # listado desactivado (lo normal en Odoo Online y Odoo.sh)
     host = url.split("://", 1)[-1].split("/", 1)[0]
     if host.endswith(".odoo.com"):
-        return host.split(".", 1)[0]  # Odoo Online: la base de datos se llama como el subdominio
-    raise ValueError("No se pudo detectar la base de datos: indícala (Odoo → Ajustes → Activar modo desarrollador)")
+        # Solo es una suposición: vale para Odoo Online, no para Odoo.sh (allí la BD tiene otro nombre).
+        # Si no es correcta, la autenticación lo detecta y pide escribirla.
+        return host.split(".", 1)[0]
+    raise ValueError("No se pudo detectar la base de datos. " + DB_HINT)
+
+
+DB_HINT = ("Escribe su nombre exacto en el campo «Base de datos». En Odoo.sh es el nombre de la base de datos "
+           "de producción (página del proyecto en odoo.sh, rama de producción).")
+
+
+def fault_message(fault: xmlrpc.client.Fault) -> str:
+    """Primera línea útil del error que devuelve Odoo (sin la traza de Python)."""
+    lines = [ln.strip() for ln in str(fault.faultString or "").splitlines() if ln.strip()]
+    useful = [ln for ln in lines if not ln.startswith(("Traceback", "File ", "^"))]
+    return (useful[-1] if useful else str(fault.faultCode))[:300]
+
+
+def is_db_fault(fault: xmlrpc.client.Fault) -> bool:
+    s = str(fault.faultString or "").lower()
+    return "database" in s and ("does not exist" in s or "not exist" in s or "doesn't exist" in s) \
+        or "keyerror" in s and "db" in s
 
 
 class OdooReadOnly:
@@ -94,7 +113,12 @@ class OdooReadOnly:
     @property
     def uid(self):
         if self._uid is None:
-            uid = self._common.authenticate(self.db, self.user, self.api_key, {})
+            try:
+                uid = self._common.authenticate(self.db, self.user, self.api_key, {})
+            except xmlrpc.client.Fault as f:
+                if is_db_fault(f):
+                    raise ValueError(f"La base de datos «{self.db}» no existe en este Odoo. " + DB_HINT) from f
+                raise
             if not uid:
                 raise PermissionError("Odoo rechaza el usuario o la API key (puede que la clave haya caducado)")
             self._uid = uid

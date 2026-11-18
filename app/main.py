@@ -11,6 +11,7 @@ import secrets
 import threading
 import time
 import urllib.request
+import xmlrpc.client
 
 import anthropic
 import openai
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from . import ai, alerts, analytics, config, credentials, data, models_catalog
+from .odoo_client import DB_HINT, fault_message, is_db_fault
 
 log = logging.getLogger(__name__)
 security = HTTPBasic(auto_error=False)
@@ -54,6 +56,14 @@ async def local_guard(request: Request, call_next):
     return await call_next(request)
 
 
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    """Cualquier error no previsto: al registro con la traza y un mensaje útil en la interfaz."""
+    log.exception("Error no controlado en %s %s", request.method, request.url.path)
+    return JSONResponse({"detail": f"Error inesperado ({type(exc).__name__}): {str(exc)[:300]}. "
+                                   "Detalles en ~/Library/Logs/PanelInventario/app.log"}, status_code=500)
+
+
 _mcache = {"key": None, "metrics": None}
 _mlock = threading.Lock()
 
@@ -79,6 +89,16 @@ def _odoo_errors(fn, *args):
         raise HTTPException(401, f"Odoo: {e}")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except xmlrpc.client.Fault as f:
+        log.warning("Odoo devolvió un error: %s", f.faultString)
+        if is_db_fault(f):
+            raise HTTPException(400, "La base de datos indicada no existe en este Odoo. " + DB_HINT)
+        raise HTTPException(502, f"Odoo devolvió un error: {fault_message(f)}")
+    except xmlrpc.client.ProtocolError as e:
+        log.warning("Error de protocolo con Odoo: %s %s %s", e.errcode, e.errmsg, e.url)
+        hint = " La dirección redirige a otra: usa la dirección final, con https://." if e.errcode in (301, 302, 303, 307, 308) \
+            else " Revisa la dirección de Odoo." if e.errcode == 404 else ""
+        raise HTTPException(502, f"Odoo respondió {e.errcode} {e.errmsg}.{hint}")
     except (OSError, TimeoutError) as e:
         raise HTTPException(502, f"No se pudo contactar con Odoo: {e}")
 
