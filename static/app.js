@@ -15,7 +15,9 @@ const md = s => DOMPurify.sanitize(marked.parse(s || ""));
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 const SEV = { critica: { label: "Crítica", ico: "⛔" }, alta: { label: "Alta", ico: "▲" }, media: { label: "Media", ico: "●" }, baja: { label: "Baja", ico: "○" } };
+let LABELS = { family: "Familia de referencia", families: "Familias de referencia", categ: "Categoría" };
 const KIND = {
+  talla_rotura: "Talla sin stock", talla_riesgo: "Talla en riesgo",
   rotura: "Sin stock", riesgo_rotura: "Riesgo de rotura", bajo_minimo: "Bajo stock mínimo", punto_pedido: "Bajo punto de pedido",
   exceso: "Exceso", sin_movimiento: "Sin movimiento", negativo: "Stock negativo", anomalia: "Anomalía de demanda",
   compra_retrasada: "Compra retrasada", caducidad: "Caducidad",
@@ -137,6 +139,9 @@ async function load(refresh = false) {
   btn.disabled = true; btn.textContent = "Cargando…";
   try {
     state.data = await api("/api/dashboard" + (refresh ? "?refresh=1" : ""));
+    LABELS = state.data.labels || LABELS;
+    FIELD_LABEL.families = LABELS.families;
+    SCOPE_LABEL.family = LABELS.families;
     render();
   } catch (e) {
     const fix = e.status === 409 || e.status === 401 ? ` <button class="link" id="warn-setup">Revisar la conexión</button>` : "";
@@ -174,17 +179,25 @@ function renderKpis() {
   const o = state.data.overview;
   const s = o.alerts_by_severity;
   const dq = o.data_quality || {};
+  const P = state.data.products;
+  const noCost = o.has_costs === false;
   const tiles = [
-    ["Valor del stock", fmtK(o.stock_value), `${fmt(o.skus_with_stock)} de ${fmt(o.skus)} productos con stock`],
+    noCost ? ["Stock", `${fmt(o.units_on_hand)} uds`, `${fmt(o.skus_with_stock)} de ${fmt(o.skus)} productos · sin costes en ${esc(ERP())}`]
+           : ["Valor del stock", fmtK(o.stock_value), `${fmt(o.skus_with_stock)} de ${fmt(o.skus)} productos con stock`],
     ["Rotación anual", o.turnover === null ? "—" : fmt(o.turnover, 1) + "×", "consumo 12 m / stock actual"],
     ["Alertas urgentes", fmt(s.critica + s.alta), `${fmt(s.critica)} críticas · ${fmt(s.alta)} altas`],
-    ["A pedir", fmt(o.to_order_count), `≈ ${fmtK(o.to_order_value)} a coste`],
-    ["Exceso (> 1 año)", fmtK(o.overstock_value), "valor con cobertura > 365 d"],
-    ["Sin movimiento", fmtK(o.dead_stock_value), "> 180 días parado"],
+    ["A pedir", fmt(o.to_order_count), noCost ? "productos con pedido sugerido" : `≈ ${fmtK(o.to_order_value)} a coste`],
+    noCost ? ["Exceso (> 1 año)", fmt(P.filter(r => r.coverage_days > 365).length), "productos con cobertura > 365 d"]
+           : ["Exceso (> 1 año)", fmtK(o.overstock_value), "valor con cobertura > 365 d"],
+    noCost ? ["Sin movimiento", fmt(P.filter(r => r.days_idle > 180 && r.on_hand > 0).length), "productos > 180 días parados"]
+           : ["Sin movimiento", fmtK(o.dead_stock_value), "> 180 días parado"],
     ["Compras en curso", fmtK(o.pending_po_value), "pendiente de recibir"],
     ["Precisión previsión", o.forecast_accuracy === null ? "—" : fmt(o.forecast_accuracy * 100) + " %",
       "1 − WAPE, bloques de 4 semanas"],
   ];
+  if (o.products_with_sizes_out || P.some(r => (r.sizes || []).length))
+    tiles.push(["Tallas agotadas", fmt(o.sizes_out), `con demanda, en ${fmt(o.products_with_sizes_out)} productos`]);
+  if (o.return_rate) tiles.push(["Devoluciones", fmt(o.return_rate * 100, 1) + " %", "de las unidades vendidas (12 meses)"]);
   if (dq.sin_coste_con_stock) tiles.push(["Calidad de datos", fmt(dq.sin_coste_con_stock), "productos con stock y sin coste"]);
   $("#kpis").innerHTML = tiles.map(([l, v, h]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="hint">${h}</div></div>`).join("");
 }
@@ -226,16 +239,29 @@ function renderCharts() {
     data: { labels: kinds.map(k => k[0]), datasets: [{ data: kinds.map(k => k[1]), backgroundColor: css("--s1"), borderRadius: 4, maxBarThickness: 22 }] },
     options: baseOpts({ indexAxis: "y", scales: { x: { grid: { color: css("--grid") }, ticks: { color: css("--ink-2") }, beginAtZero: true }, y: { grid: { display: false }, ticks: { color: css("--ink-2") } } } }),
   });
-  // Valor por categoría (top 8 + otros)
-  const cats = Object.entries(o.value_by_category).filter(c => c[1] > 0);
+  // Valor por categoría (top 8 + otros); sin costes, unidades en stock
+  const noCost = o.has_costs === false;
+  $("#categ-title").textContent = noCost ? `Stock por ${LABELS.categ.toLowerCase()}` : "Valor de stock por categoría";
+  $("#categ-sub").textContent = noCost ? `Unidades en stock (${ERP()} no tiene costes para valorarlo en €)` : "€ a coste estándar";
+  const cats = Object.entries(noCost ? (o.units_by_category || {}) : o.value_by_category).filter(c => c[1] > 0);
   const top = cats.slice(0, 8);
   const rest = cats.slice(8).reduce((s, c) => s + c[1], 0);
   if (rest > 0) top.push(["Otras", rest]);
   chart("ch-categ", {
     type: "bar",
     data: { labels: top.map(c => c[0].length > 28 ? c[0].slice(0, 27) + "…" : c[0]), datasets: [{ data: top.map(c => c[1]), backgroundColor: css("--s1"), borderRadius: 4, maxBarThickness: 22 }] },
-    options: baseOpts({ indexAxis: "y", plugins: { ...baseOpts().plugins, tooltip: { ...baseOpts().plugins.tooltip, callbacks: { title: c => cats[c[0].dataIndex]?.[0] || "Otras", label: c => fmtEur(c.raw) } } },
-      scales: { x: { grid: { color: css("--grid") }, ticks: { color: css("--ink-2"), callback: v => fmtK(v) }, beginAtZero: true }, y: { grid: { display: false }, ticks: { color: css("--ink-2") } } } }),
+    options: baseOpts({ indexAxis: "y", plugins: { ...baseOpts().plugins, tooltip: { ...baseOpts().plugins.tooltip, callbacks: { title: c => cats[c[0].dataIndex]?.[0] || "Otras", label: c => noCost ? `${fmt(c.raw)} uds` : fmtEur(c.raw) } } },
+      scales: { x: { grid: { color: css("--grid") }, ticks: { color: css("--ink-2"), callback: v => noCost ? fmt(v) : fmtK(v) }, beginAtZero: true }, y: { grid: { display: false }, ticks: { color: css("--ink-2") } } } }),
+  });
+  // Ventas por canal
+  const ch = Object.entries(state.data.channels || {}).filter(c => c[1].units > 0);
+  $("#channels-card").hidden = !ch.length;
+  if (ch.length) chart("ch-channels", {
+    type: "bar",
+    data: { labels: ch.map(c => c[0]), datasets: [{ data: ch.map(c => c[1].units), backgroundColor: css("--s1"), borderRadius: 4, maxBarThickness: 22 }] },
+    options: baseOpts({ indexAxis: "y", plugins: { ...baseOpts().plugins, tooltip: { ...baseOpts().plugins.tooltip, callbacks: {
+        label: c => [`${fmt(ch[c.dataIndex][1].units)} uds`, `${fmtEur(ch[c.dataIndex][1].revenue)} sin IVA`, `${fmt(ch[c.dataIndex][1].docs)} albaranes`] } } },
+      scales: { x: { grid: { color: css("--grid") }, ticks: { color: css("--ink-2") }, beginAtZero: true }, y: { grid: { display: false }, ticks: { color: css("--ink-2") } } } }),
   });
   // Matriz ABC/XYZ (secuencial azul por valor)
   const m = o.abc_xyz;
@@ -251,10 +277,10 @@ function renderCharts() {
       const theme = document.documentElement.dataset.theme;
       const dark = theme ? theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
       const ink = (dark ? i <= 2 : i >= 3) ? "#ffffff" : "#0b0b0b";
-      html += `<div class="c" style="background:${bg};color:${i < 0 ? "var(--ink-2)" : ink}" title="${a}${x}: ${c.count} productos · ${fmtEur(c.value)}"><b>${c.count}</b><span>${fmtK(c.value)}</span></div>`;
+      html += `<div class="c" style="background:${bg};color:${i < 0 ? "var(--ink-2)" : ink}" title="${a}${x}: ${c.count} productos${noCost ? "" : " · " + fmtEur(c.value)}"><b>${c.count}</b><span>${noCost ? "productos" : fmtK(c.value)}</span></div>`;
     }
   }
-  $("#abcxyz").innerHTML = html + "</div>";
+  $("#abcxyz").innerHTML = html + "</div>" + (noCost ? `<p class="small muted">Sin costes en ${esc(ERP())}: la clase ABC se calcula por facturación de los últimos 12 meses.</p>` : "");
 }
 
 function renderTopDemand() {
@@ -284,39 +310,49 @@ $("#gen-summary").addEventListener("click", async () => {
 });
 
 /* ---------------------------------------------------------------- productos */
-const COLS = [
-  ["ref", "Ref."], ["name", "Producto"], ["on_hand", "Stock", 1], ["virtual", "Previsto", 1], ["forecast_30d", "Demanda 30 d", 1],
-  ["coverage_days", "Cobertura (d)", 1], ["stockout_date", "Rotura"], ["lead_time_days", "Plazo (d)", 1], ["reorder_point", "Punto pedido", 1],
-  ["suggested_order", "Sugerido", 1], ["abc", "ABC"], ["xyz", "XYZ"], ["value", "Valor €", 1], ["days_idle", "Días parado", 1],
-];
+function COLS() {
+  const noCost = state.data?.overview?.has_costs === false;
+  const sizes = (state.data?.products || []).some(p => (p.sizes || []).length);
+  return [
+    ["ref", "Ref."], ["name", "Producto"], ["categ", LABELS.categ], ["family", LABELS.family], ["on_hand", "Stock", 1], ["virtual", "Previsto", 1],
+    ["forecast_30d", "Demanda 30 d", 1], ["coverage_days", "Cobertura (d)", 1], ["stockout_date", "Rotura"],
+    ...(sizes ? [["sizes_out", "Tallas agotadas"]] : []),
+    ["lead_time_days", "Plazo (d)", 1], ["reorder_point", "Punto pedido", 1], ["suggested_order", "Sugerido", 1], ["abc", "ABC"], ["xyz", "XYZ"],
+    noCost ? ["revenue_52w", "Facturación 12 m", 1] : ["value", "Valor €", 1], ["days_idle", "Días parado", 1],
+  ];
+}
 function renderFilters() {
-  const cats = [...new Set(state.data.products.map(p => p.categ))].sort();
-  const sel = $("#f-categ"), cur = sel.value;
-  sel.innerHTML = `<option value="">Todas las categorías</option>` + cats.map(c => `<option>${esc(c)}</option>`).join("");
-  sel.value = cur;
+  const uniq = f => [...new Set(state.data.products.map(f).filter(Boolean))].sort((a, b) => String(a).localeCompare(b, "es"));
+  fillSelect($("#f-categ"), uniq(p => p.categ), `Todas: ${LABELS.categ.toLowerCase()}`);
+  fillSelect($("#f-family"), uniq(p => p.family), `Todas las ${LABELS.families.toLowerCase()}`);
 }
 function filteredProducts() {
   const t = $("#f-text").value.trim().toLowerCase(), c = $("#f-categ").value, abc = $("#f-abc").value, st = $("#f-state").value;
+  const fam = $("#f-family").value;
   const riskIds = new Set(state.data.alerts.filter(a => a.kind === "rotura" || a.kind === "riesgo_rotura").map(a => a.product_id));
   return state.data.products.filter(p =>
     (!t || p.ref.toLowerCase().includes(t) || p.name.toLowerCase().includes(t)) && (!c || p.categ === c) && (!abc || p.abc === abc) &&
+    (!fam || p.family === fam) &&
     (!st || (st === "riesgo" && riskIds.has(p.id)) || (st === "pedir" && p.suggested_order > 0) ||
-      (st === "exceso" && p.coverage_days > 365) || (st === "parado" && p.days_idle > 180 && p.on_hand > 0) || (st === "stock" && p.on_hand > 0)));
+      (st === "exceso" && p.coverage_days > 365) || (st === "parado" && p.days_idle > 180 && p.on_hand > 0) || (st === "stock" && p.on_hand > 0) || (st === "tallas" && (p.sizes_out || []).length)));
 }
 function renderProducts() {
   const rows = filteredProducts();
   const { key, dir } = state.sort;
   rows.sort((a, b) => {
-    const x = a[key], y = b[key];
+    const val = v => Array.isArray(v) ? v.length : v;
+    const x = val(a[key]), y = val(b[key]);
     if (x === null || x === undefined) return 1;
     if (y === null || y === undefined) return -1;
     return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
   });
   $("#f-count").textContent = `${rows.length} productos`;
-  const head = `<thead><tr>${COLS.map(([k, l, n]) => `<th data-k="${k}" class="${n ? "num" : ""}" ${k === key ? `aria-sort="${dir > 0 ? "ascending" : "descending"}"` : ""}>${l}</th>`).join("")}</tr></thead>`;
-  const body = rows.slice(0, 500).map(p => `<tr data-id="${p.id}">${COLS.map(([k, , n]) => {
+  const cols = COLS();
+  const head = `<thead><tr>${cols.map(([k, l, n]) => `<th data-k="${k}" class="${n ? "num" : ""}" ${k === key ? `aria-sort="${dir > 0 ? "ascending" : "descending"}"` : ""}>${l}</th>`).join("")}</tr></thead>`;
+  const body = rows.slice(0, 500).map(p => `<tr data-id="${p.id}">${cols.map(([k, , n]) => {
     let v = p[k];
     if (k === "stockout_date") v = fmtDate(v);
+    else if (k === "sizes_out") v = esc((v || []).join(", ") || "—");
     else if (k === "value") v = fmt(v);
     else if (n) v = fmt(v, k === "coverage_days" ? 0 : 0);
     else v = esc(v ?? "—");
@@ -330,14 +366,14 @@ function renderProducts() {
   }));
   $$("#products tbody tr").forEach(tr => tr.addEventListener("click", () => openDetail(+tr.dataset.id)));
 }
-["#f-text", "#f-categ", "#f-abc", "#f-state"].forEach(s => $(s).addEventListener("input", renderProducts));
+["#f-text", "#f-categ", "#f-family", "#f-abc", "#f-state"].forEach(s => $(s).addEventListener("input", renderProducts));
 
 /* ---------------------------------------------------------------- detalle */
 async function openDetail(pid) {
   const dlg = $("#detail");
   const p = state.data.products.find(x => x.id === pid);
   $("#d-title").textContent = `${p.ref} · ${p.name}`;
-  $("#d-sub").textContent = `${p.categ} · ${p.uom}${p.supplier ? " · Proveedor: " + p.supplier : ""}`;
+  $("#d-sub").textContent = `${p.categ} · ${LABELS.family}: ${p.family || "—"} · ${p.uom}${p.supplier ? " · Proveedor: " + p.supplier : ""}`;
   $("#d-kpis").innerHTML = "";
   $("#d-tables").innerHTML = "";
   if (!dlg.open) dlg.showModal();
@@ -348,8 +384,10 @@ async function openDetail(pid) {
     ["Cobertura", m.coverage_days === null ? "—" : fmt(m.coverage_days) + " d"], ["Rotura estimada", fmtDate(m.stockout_date)],
     ["Plazo de entrega", fmt(m.lead_time_days) + " d"], ["Stock de seguridad", fmt(m.safety_stock)], ["Punto de pedido", fmt(m.reorder_point)],
     ["Cantidad sugerida", fmt(m.suggested_order)], [`Mínimo ${ERP()}`, m.orderpoint_min === null ? "sin definir" : fmt(m.orderpoint_min) + (m.orderpoint_max ? ` / máx. ${fmt(m.orderpoint_max)}` : "")],
-    ["Clase", `${m.abc}${m.xyz || ""}`], ["Valor", fmtEur(m.value)],
+    ["Clase", `${m.abc}${m.xyz || ""}`], m.cost ? ["Valor", fmtEur(m.value)] : ["Facturación 12 m", fmtEur(m.revenue_52w || 0)],
   ];
+  if ((m.sizes || []).length) tiles.push(["Tallas agotadas", m.sizes_out.length ? esc(m.sizes_out.join(", ")) : "ninguna"]);
+  if (m.returns_52w) tiles.push(["Devoluciones 12 m", `${fmt(m.returns_52w)} uds (${fmt(m.return_rate * 100, 1)} %)`]);
   $("#d-kpis").innerHTML = tiles.map(([l, v]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
   const f = d.forecast;
   $("#d-method").textContent = `Método: ${f.method}` + (f.accuracy !== null && f.accuracy !== undefined ? ` · precisión en backtest ${fmt(f.accuracy * 100)} %` : " · sin backtest (historia corta)") + " · banda: intervalo del 80 %";
@@ -392,7 +430,13 @@ async function openDetail(pid) {
     }),
   });
   const tbl = (title, head, rows) => `<div class="card"><h3>${title}</h3>${rows.length ? `<div class="table-wrap"><table class="tbl"><thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<p class="muted small">Sin datos</p>`}</div>`;
-  $("#d-tables").innerHTML =
+  const ST = { agotada: "⛔ Agotada", riesgo: "▲ En riesgo", ok: "Bien", "sin demanda": "Sin ventas" };
+  const sizesTbl = (m.sizes || []).length ? tbl("Tallas", ["Talla", "SKU", "Stock", "Vendidas 13 sem", "Previsión 30 d", "Cobertura (d)", "Rotura", "Estado"],
+    m.sizes.map(z => [`<b>${esc(z.size)}</b>`, esc(z.sku), fmt(z.on_hand), fmt(z.demand_13w), fmt(z.forecast_30d), fmt(z.coverage_days),
+      fmtDate(z.stockout_date), `<span class="size-st ${z.status.replace(" ", "-")}">${ST[z.status] || esc(z.status)}</span>`])) : "";
+  const chans = Object.entries(m.channels || {});
+  const chanTbl = chans.length ? tbl("Ventas por canal (12 meses)", ["Canal", "Unidades"], chans.map(([k, v]) => [esc(k), fmt(v)])) : "";
+  $("#d-tables").innerHTML = sizesTbl + chanTbl +
     tbl("Stock por ubicación", ["Ubicación", "Lote", "Caducidad", "Cantidad", "Reservado"], d.quants.map(q => [esc(q.location), esc(q.lot || "—"), fmtDate(q.expiration), fmt(q.qty), fmt(q.reserved)])) +
     tbl("Compras pendientes", ["Pedido", "Proveedor", "Fecha prevista", "Pendiente"], d.pending_po.map(po => [esc(po.order), esc(po.partner), fmtDate(po.date), fmt(po.qty)])) +
     (m.used_in.length ? tbl("Se usa en", ["Producto terminado", "Cantidad por unidad"], m.used_in.map(u => [esc(u.parent), fmt(u.qty_per_unit, 1)])) : "");
@@ -420,7 +464,7 @@ function renderAlerts() {
   const uniq = f => [...new Set(all.map(f).filter(Boolean))].sort((a, b) => String(a).localeCompare(b, "es"));
   fillSelect($("#a-kind"), uniq(a => a.kind), "Todos los tipos", kindLabel);
   fillSelect($("#a-categ"), uniq(a => a.categ), "Todas las categorías");
-  fillSelect($("#a-family"), uniq(a => a.family), "Todas las familias");
+  fillSelect($("#a-family"), uniq(a => a.family), `Todas las ${LABELS.families.toLowerCase()}`);
   const list = visibleAlerts();
   $("#a-count").textContent = `${list.length} alertas`;
   $("#alert-list").innerHTML = list.length ? list.slice(0, 300).map(a => {
@@ -431,7 +475,7 @@ function renderAlerts() {
       <div>${sevBadge(a.severity)}</div>
       <div>
         <div class="t">${esc(a.title)}</div>
-        <div class="p"><button class="link" data-id="${a.product_id}">${esc(a.ref)}</button> · ${esc(a.name)} · ${esc(kindLabel(a.kind))} · <span class="muted">${esc(a.categ)} · familia ${esc(a.family || "—")}</span></div>
+        <div class="p"><button class="link" data-id="${a.product_id}">${esc(a.ref)}</button> · ${esc(a.name)} · ${esc(kindLabel(a.kind))} · <span class="muted">${esc(a.categ)} · ${esc(LABELS.family.toLowerCase())} ${esc(a.family || "—")}</span></div>
         <div class="p">${esc(a.detail)}</div>
         <div class="a">${esc(a.action)}</div>
       </div>
@@ -815,6 +859,7 @@ const SETTING_LABELS = {
   abc_b: "ABC: corte B",
   xyz_x: "XYZ: CV máximo para X",
   xyz_y: "XYZ: CV máximo para Y",
+  talla_demanda_min_13s: "Alertas por talla: ventas mínimas de la talla en 13 semanas (uds)",
   contexto_empresa: "Contexto de la empresa para el asistente (productos, familias de referencias, cómo trabajáis…)",
 };
 async function loadSettings() {
@@ -1169,7 +1214,7 @@ const TOUR = [
   { tab: "alertas", target: "#alert-filters", title: "Tus alertas, por urgencia",
     text: "Filtra por severidad: crítica, alta, media o baja. El número rojo de la pestaña son las críticas y altas que aún no has visto." },
   { tab: "alertas", target: () => $("#a-search")?.closest(".filters"), title: "Filtra por tipo, categoría o familia",
-    text: "Encuentra rápido las alertas de una categoría o de una familia de referencia (BOX, ENV, MC…). «Marcar visibles como vistas» las archiva todas de golpe; vuelven a salir pasados unos días si el problema sigue." },
+    text: "Encuentra rápido las alertas de una categoría, de una colección o de una familia de referencia. «Marcar visibles como vistas» las archiva todas de golpe; vuelven a salir pasados unos días si el problema sigue." },
   { tab: "alertas", target: () => $("#alert-list .alert") || $("#alert-list"), title: "Cada alerta",
     text: "Te dice qué pasa, qué hacer y su impacto. En «Opciones» puedes dejar de recibir avisos de ese producto (solo de ese tipo o de ninguno) o configurar ese tipo de alerta." },
   { tab: "alertas", target: "#auto-config-card", title: "Tú decides qué alertas quieres",

@@ -36,6 +36,13 @@ AUTO_KINDS = {
                       "desc": "La cobertura es menor que el plazo de entrega: se agotará antes de que llegue una compra.",
                       "default_severity": "automática (crítica, alta o media según si las compras en curso lo cubren)",
                       "settings": ["plazo_entrega_defecto_dias", "nivel_servicio"]},
+    "talla_rotura": {"label": "Talla sin stock",
+                     "desc": "Una talla (o variante) agotada que tiene demanda, aunque queden otras tallas del producto.",
+                     "default_severity": "alta (si no queda stock de ninguna talla avisa la alerta «Sin stock» del producto)",
+                     "settings": ["talla_demanda_min_13s"]},
+    "talla_riesgo": {"label": "Talla en riesgo de rotura",
+                     "desc": "La cobertura de una talla es menor que el plazo de entrega.",
+                     "default_severity": "media", "settings": ["plazo_entrega_defecto_dias", "talla_demanda_min_13s"]},
     "bajo_minimo": {"label": "Bajo stock mínimo",
                     "desc": "El stock previsto está por debajo del mínimo definido en el ERP (regla de reabastecimiento en Odoo, stock mínimo en Holded).",
                     "default_severity": "alta", "settings": []},
@@ -328,7 +335,7 @@ def evaluate(metrics: dict, snapshot: dict, s: dict) -> list:
     def add(kind, sev, r, title, detail, action, impact=None, extra_key=""):
         alerts.append({
             "key": f"{kind}:{r['id']}{extra_key}", "kind": kind, "severity": sev, "product_id": r["id"],
-            "ref": r["ref"], "name": r["name"], "categ": r["categ"], "family": family(r["ref"]),
+            "ref": r["ref"], "name": r["name"], "categ": r["categ"], "family": r.get("family") or family(r["ref"]),
             "title": title, "detail": detail, "action": action, "impact_eur": round(impact, 2) if impact else None,
         })
 
@@ -364,16 +371,18 @@ def evaluate(metrics: dict, snapshot: dict, s: dict) -> list:
                 f"(seguridad {_fmt(r['safety_stock'])}, plazo {_fmt(lt)} d).",
                 f"Pedir {_fmt(r['suggested_order'])} {r['uom']} y definir un mínimo en {erp}")
         # 4. Exceso de stock
-        if cov is not None and d > 0 and cov > s["exceso_cobertura_dias"] and r["value"] >= s["exceso_valor_min"]:
+        if cov is not None and d > 0 and cov > s["exceso_cobertura_dias"] and (r["value"] >= s["exceso_valor_min"] or not r["cost"]):
             excess_units = r["on_hand"] - d * s["exceso_cobertura_dias"]
             add("exceso", "media" if r["value"] > 5 * s["exceso_valor_min"] else "baja", r,
                 f"Exceso: {_fmt(cov)} días de cobertura",
-                f"Valor inmovilizado {_fmt(r['value'])} €.", "Frenar compras / promoción / revisar lote mínimo",
+                f"Valor inmovilizado {_fmt(r['value'])} €." if r["cost"] else f"{_fmt(r['on_hand'])} {r['uom']} en stock (sin coste en el ERP).",
+                "Frenar compras / promoción / revisar lote mínimo",
                 impact=excess_units * r["cost"])
         # 5. Stock sin movimiento
         if r["on_hand"] > 0 and r["days_idle"] is not None and r["days_idle"] > s["sin_movimiento_dias"]:
             add("sin_movimiento", "media" if r["value"] >= s["exceso_valor_min"] else "baja", r,
-                f"Sin movimiento hace {r['days_idle']} días", f"{_fmt(r['on_hand'])} {r['uom']} · {_fmt(r['value'])} €.",
+                f"Sin movimiento hace {r['days_idle']} días",
+                f"{_fmt(r['on_hand'])} {r['uom']}" + (f" · {_fmt(r['value'])} €." if r["cost"] else " (sin coste en el ERP)."),
                 "Valorar liquidación, reutilización o regularización", impact=r["value"])
         # 6. Stock negativo
         if r["negative_quant"] or r["on_hand"] < 0:
@@ -386,6 +395,20 @@ def evaluate(metrics: dict, snapshot: dict, s: dict) -> list:
             add("anomalia", "media", r, f"Demanda {'disparada' if up else 'hundida'} (z={_fmt(r['anomaly_z'])})",
                 f"Últimas 4 semanas: {_fmt(r['demand_4w'])} {r['uom']} frente al patrón de las 26 anteriores.",
                 "Confirmar si es puntual (pedido grande) o un cambio de tendencia")
+        # 7b. Tallas agotadas o en riesgo (productos con variantes)
+        sizes = r.get("sizes") or []
+        any_stock = any(z["on_hand"] > 0 for z in sizes)
+        for z in sizes:
+            if z["demand_13w"] < s["talla_demanda_min_13s"]:
+                continue  # talla con ventas esporádicas: no merece una alerta
+            if z["status"] == "agotada" and any_stock:  # sin stock de ninguna talla ya avisa «Sin stock»
+                add("talla_rotura", "alta", r, f"Talla {z['size']} sin stock",
+                    f"Demanda prevista {_fmt(z['forecast_30d'])} uds/30 d · últimas 13 semanas {_fmt(z['demand_13w'])} uds. "
+                    "Quedan otras tallas del producto.", f"Reponer la talla {z['size']}", extra_key=f":{z['size']}")
+            elif z["status"] == "riesgo":
+                add("talla_riesgo", "media", r, f"Talla {z['size']}: cobertura {_fmt(z['coverage_days'])} d < plazo {_fmt(lt)} d",
+                    f"Stock {_fmt(z['on_hand'])} uds · rotura estimada el {_d(z['stockout_date'])}.",
+                    f"Planificar reposición de la talla {z['size']}", extra_key=f":{z['size']}")
         # 8. Compras retrasadas
         for po in r["late_po"]:
             add("compra_retrasada", "alta", r, f"Compra {po['order']} retrasada",

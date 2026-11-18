@@ -311,3 +311,10 @@ dialog#alert-editor { width: min(640px, 96vw); max-height: 92vh; border: 1px sol
 .section-switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 .section-switch button:hover:not([aria-pressed="true"]) { color: var(--ink); }
 .top { gap: 14px; }
+
+/* ---- Estado de cada talla ---- */
+.size-st { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.size-st.agotada { color: var(--critical); }
+.size-st.riesgo { color: var(--serious); }
+.size-st.ok { color: var(--good-text); }
+.size-st.sin-demanda { color: var(--ink-2); font-weight: 400; }

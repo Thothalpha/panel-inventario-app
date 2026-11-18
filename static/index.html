@@ -70,8 +70,9 @@
 
     <div class="grid2">
       <div class="card"><h2>Cobertura de stock</h2><p class="muted small">Productos con demanda, según cuántos días cubre el stock a mano</p><div class="chart-box"><canvas id="ch-coverage"></canvas></div></div>
+      <div class="card" id="channels-card" hidden><h2>Ventas por canal (12 meses)</h2><p class="muted small">Unidades netas de devoluciones, según la etiqueta de cada albarán</p><div class="chart-box"><canvas id="ch-channels"></canvas></div></div>
       <div class="card"><h2>Alertas activas por tipo</h2><p class="muted small">Sin contar las marcadas como vistas</p><div class="chart-box"><canvas id="ch-alerts"></canvas></div></div>
-      <div class="card"><h2>Valor de stock por categoría</h2><p class="muted small">€ a coste estándar</p><div class="chart-box"><canvas id="ch-categ"></canvas></div></div>
+      <div class="card"><h2 id="categ-title">Valor de stock por categoría</h2><p class="muted small" id="categ-sub">€ a coste estándar</p><div class="chart-box"><canvas id="ch-categ"></canvas></div></div>
       <div class="card"><h2>Matriz ABC / XYZ</h2><p class="muted small">ABC = peso en el consumo anual en €; XYZ = regularidad de la demanda (X estable, Z errática). Celda: nº de productos · valor de stock</p><div id="abcxyz"></div></div>
     </div>
 
@@ -86,6 +87,7 @@
     <div class="filters">
       <input id="f-text" type="search" placeholder="Buscar referencia o nombre…">
       <select id="f-categ"><option value="">Todas las categorías</option></select>
+      <select id="f-family"><option value="">Todas las familias</option></select>
       <select id="f-abc"><option value="">ABC</option><option>A</option><option>B</option><option>C</option></select>
       <select id="f-state">
         <option value="">Todos</option>
@@ -93,6 +95,7 @@
         <option value="pedir">Con pedido sugerido</option>
         <option value="exceso">Exceso (&gt; 365 d)</option>
         <option value="parado">Sin movimiento</option>
+        <option value="tallas">Con tallas agotadas</option>
         <option value="stock">Con stock</option>
       </select>
       <span id="f-count" class="muted"></span>

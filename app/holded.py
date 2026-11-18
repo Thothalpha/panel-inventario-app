@@ -84,6 +84,77 @@ def _tag_name(t):
     return str(t or "")
 
 
+# ----------------------------------------------------------------------------- clasificación
+# Holded no tiene categorías de producto en la API: el tipo se deduce del nombre, el SKU y la descripción.
+# El orden importa (p. ej. «Short … malla» es un short; «Essential … Tank» es de tirantes).
+TYPE_RULES = [
+    (r"calcet", "Calcetines"),
+    (r"\bgorra\b|\bcap\b|_cap\b|^cap_", "Gorras"),
+    (r"\bgafas\b|glasses", "Gafas"),
+    (r"flask|bid[oó]n|botella", "Hidratación"),
+    (r"cintur[oó]n|\bbelt\b", "Cinturones"),
+    (r"short|aerosplit", "Shorts"),
+    (r"tights|\bmallas?\b|legging", "Mallas"),
+    (r"pantal[oó]n|\bpants?\b|_pant", "Pantalones"),
+    (r"wind ?jacket|windbreaker|cortavientos|contavientos|\bwind\b|_wind|loveshell|jacket|chaqueta", "Chaquetas y cortavientos"),
+    (r"long[ _]sleeve|\blong\b|_long", "Manga larga"),
+    (r"tank|tirantes", "Tirantes"),
+    (r"\btop\b|_top|crop", "Tops"),
+    (r"merino|t-?shirt|camiseta|_cam\b|tecnic|oversi[sz]e|\bbasic\b|essential", "Camisetas"),
+]
+OTHER_TYPE = "Otras prendas"
+COLLECTION_ATTR = "COLECCIONES"
+SIZE_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "Única"]
+
+
+def detect_type(*texts) -> str:
+    t = " ".join(str(x or "") for x in texts).lower()
+    t = re.sub(r"<[^>]+>", " ", t)
+    for pattern, label in TYPE_RULES:
+        if re.search(pattern, t):
+            return label
+    return OTHER_TYPE
+
+
+def detect_collection(product: dict, known: set) -> str:
+    for a in product.get("attributes") or []:
+        if str(a.get("name") or "").upper() == COLLECTION_ATTR and a.get("value"):
+            return str(a["value"]).strip().upper()
+    name = f" {product.get('name') or ''} {product.get('sku') or ''} ".upper().replace("_", " ")
+    return next((k for k in sorted(known) if f" {k} " in name), "Sin colección")
+
+
+def norm_size(v) -> str:
+    s = str(v or "").replace("\xa0", " ").strip()
+    if not s:
+        return ""
+    if re.search(r"[uú]nica", s, re.I):
+        return "Única"
+    s = re.sub(r"(?i)^talla\s*", "", s)
+    s = re.sub(r"^\d+\s*-\s*", "", s).strip()
+    return s.upper() if s.upper() in SIZE_ORDER else s
+
+
+def size_rank(size: str) -> int:
+    return SIZE_ORDER.index(size) if size in SIZE_ORDER else len(SIZE_ORDER)
+
+
+def variant_size(v: dict, idx: int) -> str:
+    opts = v.get("options") or []
+    size = next((o.get("value") for o in opts if "talla" in str(o.get("name") or "").lower() or "size" in str(o.get("name") or "").lower()), None)
+    size = size or (opts[0].get("value") if opts else None)
+    return norm_size(size) or f"Variante {idx + 1}"
+
+
+def channel_of(tags) -> str:
+    """Canal de venta a partir de las etiquetas del albarán (tienda, decathlon, club…)."""
+    for t in tags or []:
+        name = _tag_name(t).strip().lower().replace("_", " ")
+        if re.fullmatch(r"[a-záéíóúñü ]{2,30}", name):  # descarta identificadores con números
+            return name.capitalize()
+    return "Sin canal"
+
+
 # ----------------------------------------------------------------------------- cliente
 class HoldedReadOnly:
     def __init__(self, token: str, base_url: str | None = None):
@@ -221,6 +292,10 @@ def fetch_snapshot(c: HoldedReadOnly, grid: list, warnings: list) -> dict:
     raw = c.paginate("/products")
     hid_to_pid, products, quants, orderpoints, suppliers_ids = {}, {}, [], {}, {}
     pack_of = {}
+    variants = {}            # pid → [{vid, size, sku, on_hand}]
+    vid_owner = {}           # id de variante → pid
+    known_collections = {str(a.get("value")).strip().upper() for p in raw for a in p.get("attributes") or []
+                         if str(a.get("name") or "").upper() == COLLECTION_ATTR and a.get("value")}
     for p in raw:
         hid_to_pid[p["id"]] = pid_of(p["id"])
         if p.get("pack_items"):
@@ -231,13 +306,26 @@ def fetch_snapshot(c: HoldedReadOnly, grid: list, warnings: list) -> dict:
         pid = hid_to_pid[p["id"]]
         tags = [_tag_name(t) for t in (p.get("tags") or []) if _tag_name(t)]
         on_hand = num(p.get("stock"))
+        vlist = [v for v in (p.get("variants") or []) if not v.get("archived")]
+        vcosts = [num(v.get("cost")) or num(v.get("purchase_price")) for v in vlist]
+        vcosts = [x for x in vcosts if x > 0]
+        cost = num(p.get("cost")) or num(p.get("purchase_price")) or (sum(vcosts) / len(vcosts) if vcosts else 0.0)
         products[pid] = {
             "id": pid, "tmpl_id": pid, "holded_id": p["id"], "ref": p.get("sku") or "", "name": p.get("name") or "",
-            "categ": tags[0] if tags else "Sin categoría", "uom": "Unidades",
+            # Etiqueta de Holded si existe; si no, el tipo deducido del nombre
+            "categ": tags[0] if tags else detect_type(p.get("name"), p.get("sku"), p.get("description")),
+            "family": detect_collection(p, known_collections), "uom": "Unidades",
             "on_hand": on_hand, "free": on_hand, "virtual": on_hand, "incoming": 0.0, "outgoing": 0.0,
-            "cost": num(p.get("cost")) or num(p.get("purchase_price")), "price": num(p.get("price")),
+            "cost": cost, "price": num(p.get("price")),
             "sale_ok": bool(p.get("for_sale", True)), "purchase_ok": bool(p.get("for_purchase", True)),
         }
+        if vlist:
+            variants[pid] = []
+            for i, v in enumerate(vlist):
+                variants[pid].append({"vid": v.get("id"), "size": variant_size(v, i), "sku": v.get("sku") or "",
+                                      "on_hand": num(v.get("stock"))})
+                vid_owner[v.get("id")] = pid
+            variants[pid].sort(key=lambda x: (size_rank(x["size"]), x["size"]))
         stocks = p.get("stocks") or []
         if stocks:
             per_wh = defaultdict(float)
@@ -264,8 +352,13 @@ def fetch_snapshot(c: HoldedReadOnly, grid: list, warnings: list) -> dict:
             if cpid in products:
                 bom_usage[cpid].append({"parent": parent.get("name") or "", "qty_per_unit": num(it.get("units")) or 1.0})
 
-    # Demanda: líneas de albaranes (salida física de mercancía)
+    # Demanda: líneas de albaranes (salida física de mercancía). Las unidades negativas son devoluciones y se restan.
     weekly = {pid: [0.0] * len(grid) for pid in products}
+    vweekly = defaultdict(lambda: [0.0] * len(grid))          # (pid, vid) → demanda semanal de la talla
+    channels = defaultdict(lambda: {"units": 0.0, "revenue": 0.0, "docs": 0})
+    channel_by_product = defaultdict(lambda: defaultdict(float))
+    returns_52w, revenue_52w = defaultdict(float), defaultdict(float)
+    year_ago = today.toordinal() - 364
     last_move = {}
     try:
         waybills = c.paginate("/waybills", {"start_date": since.isoformat(), "sort": "date"})
@@ -277,14 +370,39 @@ def fetch_snapshot(c: HoldedReadOnly, grid: list, warnings: list) -> dict:
             continue
         d = to_date(w.get("date"))
         i = week(d)
+        recent = bool(d and d.toordinal() >= year_ago)
+        ch = channel_of(w.get("tags"))
+        if recent:
+            channels[ch]["docs"] += 1
         for ln in w.get("lines") or []:
             pid = hid_to_pid.get(ln.get("product_id"))
             if pid not in products:
                 continue
+            units = num(ln.get("units"))
             if i is not None:
-                weekly[pid][i] += max(0.0, num(ln.get("units")))
-            if d and (pid not in last_move or d.isoformat() > last_move[pid]):
+                weekly[pid][i] += units
+                vid = ln.get("variant_id")
+                if vid and vid_owner.get(vid) == pid:
+                    vweekly[(pid, vid)][i] += units
+            if recent:
+                disc = num(ln.get("discount"))
+                rev = num(ln.get("price")) * units * (1 - disc / 100 if 0 <= disc <= 100 else 1)
+                channels[ch]["units"] += units
+                channels[ch]["revenue"] += rev
+                channel_by_product[pid][ch] += units
+                revenue_52w[pid] += rev
+                if units < 0:
+                    returns_52w[pid] += -units
+            if d and units > 0 and (pid not in last_move or d.isoformat() > last_move[pid]):
                 last_move[pid] = d.isoformat()
+    # Una semana con más devoluciones que ventas no es demanda negativa
+    for series in list(weekly.values()) + list(vweekly.values()):
+        for k, v in enumerate(series):
+            if v < 0:
+                series[k] = 0.0
+    for pid, vl in variants.items():
+        for v in vl:
+            v["weekly"] = vweekly.get((pid, v["vid"]), [0.0] * len(grid))
 
     # Consumo en fabricación: órdenes de producción terminadas × componentes del producto fabricado
     try:
@@ -348,10 +466,23 @@ def fetch_snapshot(c: HoldedReadOnly, grid: list, warnings: list) -> dict:
     for pid, sid in suppliers_ids.items():
         suppliers[pid] = {"partner": names.get(sid) or None, "delay": 0, "min_qty": 0.0, "price": products[pid]["cost"]}
 
+    has_costs = sum(1 for p in products.values() if p["cost"] > 0) >= max(1, len(products) // 2)
+    if not has_costs:
+        warnings.append("Holded no tiene el coste de la mayoría de productos: el valor del stock, el exceso en € y el "
+                        "dinero parado saldrán a cero o incompletos hasta que se carguen los costes (en el producto o en "
+                        "cada variante). Mientras tanto, la clasificación ABC se hace por facturación.")
+
     log.info("Holded: %s productos, %s albaranes, %s llamadas a la API", len(products), len(waybills), c.calls)
     return {
         "source": "holded", "generated_at": datetime.now().isoformat(timespec="seconds"), "warnings": warnings,
         "week_starts": [d.isoformat() for d in grid], "products": products, "weekly_demand": weekly,
         "last_move": last_move, "last_in": last_in, "quants": quants, "orderpoints": orderpoints,
         "suppliers": suppliers, "pending_po": pending_po, "bom_usage": dict(bom_usage),
+        # Específico de Holded (la app lo usa si existe)
+        "variants": variants, "has_costs": has_costs,
+        "channels": {k: {"units": round(v["units"], 1), "revenue": round(v["revenue"], 2), "docs": v["docs"]}
+                     for k, v in sorted(channels.items(), key=lambda kv: -kv[1]["units"])},
+        "channel_by_product": {pid: dict(v) for pid, v in channel_by_product.items()},
+        "returns_52w": dict(returns_52w), "revenue_52w": {k: round(v, 2) for k, v in revenue_52w.items()},
+        "labels": {"family": "Colección", "families": "Colecciones", "categ": "Tipo / etiqueta"},
     }

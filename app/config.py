@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "PanelInventario"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 GITHUB_REPO = "Thothalpha/panel-inventario-app"
 
 # Recursos (static/): dentro del paquete de PyInstaller viven en sys._MEIPASS
@@ -81,6 +81,7 @@ DEFAULT_SETTINGS = {
     "sin_movimiento_dias": 180,
     "caducidad_aviso_dias": 90,
     "anomalia_z": 2.5,
+    "talla_demanda_min_13s": 3,            # alertas por talla solo si vendió al menos N uds en 13 semanas
     "ack_dias": 7,                         # una alerta "vista" vuelve a salir tras N días
     # ABC / XYZ
     "abc_a": 0.80,

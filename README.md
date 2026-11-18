@@ -67,10 +67,14 @@ prefieres revisarlo antes de ejecutarlo, está en [`scripts/instalar-mac.sh`](sc
 | En la app | En Holded (API v2) |
 |---|---|
 | Productos y stock por almacén | Productos con stock (`has_stock`), `stocks` por almacén; archivados excluidos |
-| Categoría | Primera etiqueta del producto (Holded no tiene categorías de producto en la API) |
+| Tipo (categoría) | Primera etiqueta del producto; si no tiene, el tipo deducido del nombre (Camisetas, Shorts, Tirantes…) |
+| Colección (familia) | Atributo `COLECCIONES` del producto (FUJI, WAVE…) o el nombre de una colección conocida |
+| Tallas | Variantes del producto: stock por variante y demanda por `variant_id` de los albaranes; tallas normalizadas (XS…XXL) |
+| Canal de venta | Etiqueta del albarán (tienda, decathlon, club…); las etiquetas con aspecto de identificador se ignoran |
+| Coste y valor | `cost` del producto o media de sus variantes. Sin costes, el valor sale a 0 y la clase ABC se calcula por facturación |
 | Mínimo del ERP | `min_stock` del producto |
 | Lista de materiales | `pack_items` de los packs |
-| Demanda | Líneas de **albaranes** (excepto cancelados) + consumo de las órdenes de producción terminadas |
+| Demanda | Líneas de **albaranes** (excepto cancelados), **netas de devoluciones** (unidades negativas) + consumo de las órdenes de producción terminadas |
 | Compras pendientes | Líneas de pedidos de compra no recibidas (`supplied = false`), con su fecha prevista |
 | Plazo de entrega | Holded no lo guarda: se usa el plazo por defecto de Configuración |
 

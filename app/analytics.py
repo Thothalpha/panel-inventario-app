@@ -194,6 +194,11 @@ def compute(snapshot: dict, settings: dict) -> dict:
     for po in snapshot["pending_po"]:
         pending_by.setdefault(po["pid"], []).append(po)
     neg_quants = {q["pid"] for q in snapshot["quants"] if q["qty"] < 0}
+    has_costs = snapshot.get("has_costs", True)
+    variants = snapshot.get("variants") or {}
+    chan_by_p = snapshot.get("channel_by_product") or {}
+    returns = snapshot.get("returns_52w") or {}
+    revenue = snapshot.get("revenue_52w") or {}
 
     rows = {}
     for pid, p in snapshot["products"].items():
@@ -227,10 +232,12 @@ def compute(snapshot: dict, settings: dict) -> dict:
         nz = [v for v in y[-52:]]
         cv = (statistics.pstdev(nz) / statistics.mean(nz)) if nz and statistics.mean(nz) > 0 else None
         pend = pending_by.get(pid, [])
+        sizes = _sizes(variants.get(pid) or [], ws, h, lead, today)
+        ret = returns.get(pid, 0.0)
         rows[pid] = {
             **{k: p[k] for k in ("id", "ref", "name", "categ", "uom", "on_hand", "free", "virtual", "incoming",
                                  "outgoing", "cost", "price")},
-            "family": _family(p["ref"]), "value": round(stock_base * p["cost"], 2),
+            "family": p.get("family") or _family(p["ref"]), "value": round(stock_base * p["cost"], 2),
             "demand_4w": last4, "demand_13w": last13, "demand_52w": last52,
             "daily_forecast": round(daily, 3), "forecast_30d": round(daily * 30, 1),
             "forecast_90d": round(sum(fc["forecast"][:13]) if h >= 13 else daily * 90, 1),
@@ -247,11 +254,42 @@ def compute(snapshot: dict, settings: dict) -> dict:
             "late_po": [x for x in pend if x["date"] and x["date"] < today.isoformat()],
             "negative_quant": pid in neg_quants,
             "used_in": snapshot["bom_usage"].get(pid, []),
-            "consumption_value_52w": round(last52 * p["cost"], 2),
+            # Sin costes (Holded), la importancia ABC se mide por facturación
+            "consumption_value_52w": round(last52 * p["cost"], 2) if has_costs else round(revenue.get(pid, 0.0), 2),
+            "revenue_52w": round(revenue.get(pid, 0.0), 2), "returns_52w": round(ret, 1),
+            "return_rate": round(ret / (last52 + ret), 3) if (last52 + ret) > 0 and ret else 0.0,
+            "channels": {k: round(v, 1) for k, v in sorted((chan_by_p.get(pid) or {}).items(), key=lambda kv: -kv[1])},
+            "sizes": sizes,
+            "sizes_out": [z["size"] for z in sizes if z["status"] == "agotada"],
+            "sizes_risk": [z["size"] for z in sizes if z["status"] == "riesgo"],
         }
 
     _classify(rows, settings)
     return rows
+
+
+def _sizes(vlist, ws, h, lead, today):
+    """Stock, demanda, previsión y cobertura de cada talla (o variante) de un producto."""
+    out = []
+    for v in vlist:
+        y = v.get("weekly") or [0.0] * len(ws)
+        fc = forecast_series(y, ws, h)
+        daily = (sum(fc["forecast"][:4]) / 4 / 7) if fc["forecast"] else 0.0
+        stock = v.get("on_hand", 0.0)
+        cov = max(stock, 0) / daily if daily > 0 else None
+        if daily > 0 and stock <= 0:
+            status = "agotada"
+        elif cov is not None and cov < lead:
+            status = "riesgo"
+        elif daily > 0:
+            status = "ok"
+        else:
+            status = "sin demanda"
+        out.append({"size": v.get("size"), "sku": v.get("sku"), "on_hand": stock, "demand_13w": round(sum(y[-13:]), 1),
+                    "forecast_30d": round(daily * 30, 1), "coverage_days": round(cov, 1) if cov is not None else None,
+                    "stockout_date": (today + timedelta(days=int(cov))).isoformat() if cov is not None else None,
+                    "status": status})
+    return out
 
 
 def _classify(rows, s):
@@ -302,9 +340,13 @@ def overview(metrics: dict, alerts: list) -> dict:
     over = sum(r["value"] for r in rows if r["coverage_days"] and r["coverage_days"] > 365)
     accs = [(r["accuracy"], r["consumption_value_52w"]) for r in rows if r["accuracy"] is not None]
     wacc = (sum(a * w for a, w in accs) / sum(w for _, w in accs)) if accs and sum(w for _, w in accs) > 0 else None
-    by_cat = {}
+    by_cat, units_cat = {}, {}
     for r in rows:
         by_cat[r["categ"]] = by_cat.get(r["categ"], 0) + r["value"]
+        units_cat[r["categ"]] = units_cat.get(r["categ"], 0) + max(r["on_hand"], 0)
+    has_costs = any(r["cost"] > 0 for r in rows) and sum(1 for r in rows if r["cost"] > 0) >= len(rows) / 2
+    sold = sum(r["demand_52w"] for r in rows)
+    returned = sum(r.get("returns_52w", 0) for r in rows)
     cov_buckets = {"Sin stock": 0, "< plazo": 0, "< 30 d": 0, "30–90 d": 0, "90–180 d": 0, "180–365 d": 0, "> 365 d": 0}
     for r in rows:
         c = r["coverage_days"]
@@ -346,6 +388,12 @@ def overview(metrics: dict, alerts: list) -> dict:
         }, "forecast_accuracy": round(wacc, 3) if wacc is not None else None,
         "alerts_by_severity": sev, "value_by_category": dict(sorted(by_cat.items(), key=lambda kv: -kv[1])),
         "coverage_buckets": cov_buckets, "abc_xyz": matrix,
+        "has_costs": has_costs, "abc_basis": "coste" if has_costs else "facturación",
+        "units_on_hand": round(sum(max(r["on_hand"], 0) for r in rows), 1),
+        "units_by_category": dict(sorted(units_cat.items(), key=lambda kv: -kv[1])),
+        "return_rate": round(returned / (sold + returned), 3) if (sold + returned) > 0 else None,
+        "sizes_out": sum(len(r.get("sizes_out", [])) for r in rows),
+        "products_with_sizes_out": sum(1 for r in rows if r.get("sizes_out")),
         "top_demand_30d": [{"id": r["id"], "ref": r["ref"], "name": r["name"], "forecast_30d": r["forecast_30d"],
                             "on_hand": r["on_hand"]} for r in top30],
     }

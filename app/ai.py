@@ -53,9 +53,13 @@ Cómo trabajas:
 
 ERP_NOTES = {
     "odoo": "",
-    "holded": (" En Holded: la demanda sale de los albaranes (y del consumo de las órdenes de producción terminadas), "
-               "el mínimo es el «stock mínimo» del producto, la categoría es la primera etiqueta del producto y "
-               "Holded no guarda plazos de proveedor, así que se usa el plazo por defecto."),
+    "holded": (" En Holded: la demanda sale de los albaranes, neta de devoluciones (y del consumo de las órdenes de producción "
+               "terminadas); el mínimo es el «stock mínimo» del producto; la categoría es la etiqueta del producto o, si no "
+               "tiene, el tipo deducido del nombre (Camisetas, Shorts, Tirantes…); «family» es la COLECCIÓN (FUJI, WAVE…); "
+               "el stock y la demanda también están por TALLA (sizes, sizes_out = tallas agotadas con demanda); los canales "
+               "de venta salen de las etiquetas de los albaranes (tienda, decathlon, club…). Holded no guarda plazos de "
+               "proveedor (se usa el plazo por defecto) y si faltan costes el valor en € sale a cero: dilo y usa unidades o "
+               "facturación (revenue_52w)."),
 }
 
 
@@ -213,7 +217,8 @@ def _state():
 _COMPACT = ["ref", "name", "categ", "uom", "on_hand", "virtual", "incoming", "outgoing", "cost", "value",
             "demand_13w", "demand_52w", "forecast_30d", "forecast_90d", "coverage_days", "coverage_virtual_days",
             "stockout_date", "lead_time_days", "supplier", "safety_stock", "reorder_point", "suggested_order",
-            "orderpoint_min", "orderpoint_max", "abc", "xyz", "days_idle", "pending_po_qty", "method", "accuracy"]
+            "orderpoint_min", "orderpoint_max", "abc", "xyz", "days_idle", "pending_po_qty", "method", "accuracy",
+            "family", "sizes_out", "sizes_risk", "returns_52w", "return_rate", "revenue_52w", "channels"]
 
 
 def _compact(r):
@@ -232,7 +237,8 @@ def run_tool(name, args, ctx):
     if name == "resumen_inventario":
         ov = analytics.overview(metrics, [a for a in al if not a["acked"]])
         return {"fuente": snap["source"], "generado": snap["generated_at"], "avisos_datos": snap["warnings"],
-                "kpis": ov, "alertas_top": [a for a in al if not a["acked"]][:25]}
+                "kpis": ov, "ventas_por_canal_12m": snap.get("channels") or {},
+                "alertas_top": [a for a in al if not a["acked"]][:25]}
     if name == "buscar_productos":
         t = (args.get("texto") or "").lower()
         rows = [r for r in metrics.values()
@@ -253,6 +259,7 @@ def run_tool(name, args, ctx):
         d = analytics.product_detail(snap, s, pid, metrics)
         h = d["history"]
         return {"metricas": _compact(d["metrics"]), "usado_en": d["metrics"]["used_in"],
+                "tallas": d["metrics"].get("sizes") or [],
                 "historia_26s": dict(zip(h["weeks"][-26:], h["values"][-26:])),
                 "prevision": {"metodo": d["forecast"]["method"], "precision_backtest": d["forecast"]["accuracy"],
                               "semanas": dict(zip(d["forecast"]["future_weeks"], [round(x, 1) for x in d["forecast"]["forecast"]])),

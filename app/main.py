@@ -133,7 +133,10 @@ def dashboard(refresh: bool = False):
         "source": snap["source"], "section": config.section(), "erp_name": config.erp_name(),
         "generated_at": snap["generated_at"], "warnings": snap["warnings"],
         "ai_available": ai.ai_available(), "overview": ov, "alerts": al,
-        "products": sorted(metrics.values(), key=lambda r: -r["value"]),
+        "products": sorted(metrics.values(), key=lambda r: (-r["value"], -r.get("revenue_52w", 0))),
+        "channels": snap.get("channels") or {},
+        "labels": snap.get("labels") or {"family": "Familia de referencia", "families": "Familias de referencia",
+                                         "categ": "Categoría"},
         "last_summary": alerts.last_summary(),
     }
 
