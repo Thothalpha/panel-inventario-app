@@ -14,6 +14,7 @@ import keyring
 from keyring.errors import KeyringError, NoKeyringError
 
 from . import config
+from .odoo_client import normalize_url
 
 log = logging.getLogger(__name__)
 SERVICE = config.APP_NAME
@@ -103,7 +104,7 @@ def save(odoo: dict | None = None, ai: dict | None = None):
     """Guarda la conexión. Una clave vacía significa «conservar la guardada»."""
     d = _load()
     if odoo is not None:
-        d["odoo_url"] = (odoo.get("url") or "").strip().rstrip("/")
+        d["odoo_url"] = normalize_url(odoo.get("url") or "")
         d["odoo_db"] = (odoo.get("db") or "").strip()
         d["odoo_user"] = (odoo.get("user") or "").strip()
         if odoo.get("key"):

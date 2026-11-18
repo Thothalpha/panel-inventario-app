@@ -58,7 +58,7 @@ def test_connection(url, db, user, key) -> dict:
             access[label] = bool(o.call(model, "check_access_rights", "read", raise_exception=False))
         except Exception:  # módulo no instalado
             access[label] = None
-    return {"version": version, "db": o.db, "uid": uid, "user_name": name, "access": access}
+    return {"version": version, "url": o.url, "db": o.db, "uid": uid, "user_name": name, "access": access}
 
 
 def reset():

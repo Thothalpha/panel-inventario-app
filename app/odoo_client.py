@@ -8,6 +8,7 @@ Credenciales por variables de entorno:
 """
 
 import os
+import urllib.parse
 import xmlrpc.client
 
 # Únicos métodos permitidos: cualquier otro (create, write, unlink, action_*, etc.) se rechaza.
@@ -61,9 +62,23 @@ def _proxy(url):
     return xmlrpc.client.ServerProxy(url, allow_none=True, transport=transport)
 
 
+def normalize_url(url: str) -> str:
+    """Solo esquema y dominio: lo copiado del navegador (p. ej. https://x.odoo.com/odoo/inventory)
+    da «400 Bad Request» en XML-RPC. Sin esquema, se usa https://."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if "://" not in url:
+        url = "https://" + url
+    parts = urllib.parse.urlsplit(url)
+    if not parts.netloc:
+        raise ValueError("La dirección de Odoo no es válida (ejemplo: https://miempresa.odoo.com)")
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+
+
 def detect_db(url: str) -> str:
     """Nombre de la base de datos cuando el usuario no lo indica."""
-    url = url.rstrip("/")
+    url = normalize_url(url)
     try:
         dbs = _proxy(f"{url}/xmlrpc/2/db").list()
         if len(dbs) == 1:
@@ -99,7 +114,7 @@ def is_db_fault(fault: xmlrpc.client.Fault) -> bool:
 
 class OdooReadOnly:
     def __init__(self, url=None, db=None, user=None, api_key=None):
-        self.url = (url or os.environ["ODOO_URL"]).rstrip("/")
+        self.url = normalize_url(url or os.environ["ODOO_URL"])
         self.db = db or os.environ["ODOO_DB"]
         self.user = user or os.environ["ODOO_USER"]
         self.api_key = api_key or os.environ["ODOO_API_KEY"]

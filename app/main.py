@@ -193,7 +193,7 @@ async def setup_odoo_test(req: Request):
     key = b.get("key") or stored["odoo_key"]
     if not (b.get("url") and b.get("user") and key):
         raise HTTPException(400, "Completa la dirección, el usuario y la API key")
-    return await run_in_threadpool(_odoo_errors, data.test_connection, b["url"].strip().rstrip("/"),
+    return await run_in_threadpool(_odoo_errors, data.test_connection, b["url"],
                                    (b.get("db") or "").strip(), b["user"].strip(), key.strip())
 
 

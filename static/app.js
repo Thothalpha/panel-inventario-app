@@ -686,6 +686,7 @@ $("#test-odoo").addEventListener("click", async () => {
   try {
     const r = await api("/api/setup/odoo/test", { method: "POST", body: JSON.stringify(
       { url: f.odoo_url.value, db: f.odoo_db.value, user: f.odoo_user.value, key: f.odoo_key.value }) });
+    if (r.url) f.odoo_url.value = r.url;
     if (!f.odoo_db.value) f.odoo_db.value = r.db;
     const denied = Object.entries(r.access).filter(([, v]) => v === false).map(([k]) => k);
     const missing = Object.entries(r.access).filter(([, v]) => v === null).map(([k]) => k);
