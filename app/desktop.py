@@ -57,6 +57,24 @@ def _wait_ready(url, timeout=30):
     return False
 
 
+def _setup_tls(log):
+    """El Python empaquetado no ve los certificados del sistema: sin esto, HTTPS falla con
+    CERTIFICATE_VERIFY_FAILED. Se usa el almacén de confianza de macOS (truststore) y, si no
+    está disponible, la lista de certifi."""
+    try:
+        import certifi
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    except Exception as e:  # pragma: no cover
+        log.warning("certifi no disponible: %s", e)
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+        return "truststore"
+    except Exception as e:
+        log.warning("truststore no disponible (%s); se usa certifi", e)
+        return "certifi"
+
+
 def main():
     data_dir, log_dir = _dirs()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +83,8 @@ def main():
     os.environ["PANEL_APP_TOKEN"] = token
     _setup_logging(log_dir)
     log = logging.getLogger("desktop")
+    tls = _setup_tls(log)
+    log.info("Certificados TLS: %s", tls)
 
     # Importar después de fijar las variables de entorno (config las lee al importarse)
     import uvicorn
@@ -90,7 +110,18 @@ def main():
         info = json.loads(urllib.request.urlopen(req, timeout=10).read())
         html = urllib.request.urlopen(base + "/", timeout=10).read().decode("utf-8")
         assert "setup-form" in html, "index.html incompleto"
-        print(f"SELFTEST OK · versión {info['version']} · configurada={info['configured']} · llavero="
+        # HTTPS real con la configuración de certificados de la app (Odoo, OpenRouter y GitHub lo usan)
+        import ssl
+        import xmlrpc.client
+        urllib.request.urlopen("https://openrouter.ai/api/v1/models", timeout=20).read(100)
+        from app.odoo_client import _proxy
+        try:
+            _proxy("https://www.odoo.com/xmlrpc/2/common").version()
+        except xmlrpc.client.Fault:
+            pass  # responde Odoo: el TLS ha funcionado
+        except ssl.SSLError as e:
+            raise SystemExit(f"SELFTEST FALLO TLS: {e}")
+        print(f"SELFTEST OK · versión {info['version']} · configurada={info['configured']} · tls={tls} · llavero="
               f"{type(__import__('keyring').get_keyring()).__name__}")
         server.should_exit = True
         return

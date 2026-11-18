@@ -11,7 +11,7 @@ a = Analysis(
     ["panel_inventario.py"],
     pathex=["."],
     datas=[("static", "static")],
-    hiddenimports=collect_submodules("uvicorn") + ["keyring.backends.macOS", "app.main", "app.desktop"],
+    hiddenimports=collect_submodules("uvicorn") + ["keyring.backends.macOS", "app.main", "app.desktop", "truststore", "certifi"],
     excludes=["tkinter", "matplotlib", "numpy", "pandas", "PyQt5", "PyQt6", "PySide6", "gi"],
     noarchive=False,
 )

@@ -4,3 +4,5 @@ anthropic>=2.4
 openai>=3.0
 keyring>=25
 pywebview>=6.0
+certifi>=2024.2
+truststore>=0.10
