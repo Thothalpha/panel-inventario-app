@@ -394,6 +394,15 @@ async function openDetail(pid) {
 $("#d-close").addEventListener("click", () => $("#detail").close());
 
 /* ---------------------------------------------------------------- alertas */
+const FIELD_LABEL = { products: "Productos", categories: "Categorías", families: "Familias de referencia" };
+const SCOPE_LABEL = { all: "Todos los productos", category: "Categorías", family: "Familias de referencia", products: "Productos concretos" };
+
+function fillSelect(sel, values, allLabel, labelFn = v => v) {
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${esc(allLabel)}</option>` + values.map(v => `<option value="${esc(v)}">${esc(labelFn(v))}</option>`).join("");
+  if (values.includes(cur)) sel.value = cur;
+}
+
 function renderAlerts() {
   const all = state.data.alerts;
   const counts = { "": all.filter(a => !a.acked).length };
@@ -401,31 +410,50 @@ function renderAlerts() {
   $("#sev-chips").innerHTML = [["", "Todas"], ...Object.entries(SEV).map(([k, v]) => [k, v.label])]
     .map(([k, l]) => `<button class="chip" data-s="${k}" aria-pressed="${state.sev === k}">${k ? `<span class="sev ${k}" style="border:0;padding:0"></span> ` : ""}${l} (${counts[k]})</button>`).join("");
   $$("#sev-chips .chip").forEach(c => c.addEventListener("click", () => { state.sev = c.dataset.s; renderAlerts(); }));
-  const kinds = [...new Set(all.map(a => a.kind))];
-  const ks = $("#a-kind"), cur = ks.value;
-  ks.innerHTML = `<option value="">Todos los tipos</option>` + kinds.map(k => `<option value="${k}">${kindLabel(k)}</option>`).join("");
-  ks.value = cur;
+  const uniq = f => [...new Set(all.map(f).filter(Boolean))].sort((a, b) => String(a).localeCompare(b, "es"));
+  fillSelect($("#a-kind"), uniq(a => a.kind), "Todos los tipos", kindLabel);
+  fillSelect($("#a-categ"), uniq(a => a.categ), "Todas las categorías");
+  fillSelect($("#a-family"), uniq(a => a.family), "Todas las familias");
   const list = visibleAlerts();
-  $("#alert-list").innerHTML = list.length ? list.slice(0, 300).map(a => `
+  $("#a-count").textContent = `${list.length} alertas`;
+  $("#alert-list").innerHTML = list.length ? list.slice(0, 300).map(a => {
+    const auto = !a.kind.startsWith("regla");
+    const ruleId = auto ? null : a.kind.slice(5);
+    return `
     <div class="alert ${a.severity} ${a.acked ? "acked" : ""}">
       <div>${sevBadge(a.severity)}</div>
       <div>
         <div class="t">${esc(a.title)}</div>
-        <div class="p"><button class="link" data-id="${a.product_id}">${esc(a.ref)}</button> · ${esc(a.name)} · ${kindLabel(a.kind)}</div>
+        <div class="p"><button class="link" data-id="${a.product_id}">${esc(a.ref)}</button> · ${esc(a.name)} · ${esc(kindLabel(a.kind))} · <span class="muted">${esc(a.categ)} · familia ${esc(a.family || "—")}</span></div>
         <div class="p">${esc(a.detail)}</div>
         <div class="a">${esc(a.action)}</div>
       </div>
       <div class="side">
         ${a.impact_eur ? `<span class="small muted">Impacto ≈ ${fmtEur(a.impact_eur)}</span>` : ""}
         ${a.acked ? `<span class="small muted">Vista</span>` : `<button class="btn ghost small" data-ack="${esc(a.key)}">Marcar vista</button>`}
+        <details class="menu"><summary class="btn ghost small">Opciones ▾</summary>
+          <div class="menu-list">
+            ${auto ? `<button data-mute-kind="${esc(a.kind)}" data-ref="${esc(a.ref)}">No avisar de ${esc(a.ref)} en «${esc(kindLabel(a.kind))}»</button>` : ""}
+            <button data-mute-kind="*" data-ref="${esc(a.ref)}">No avisar de ${esc(a.ref)} en ninguna alerta</button>
+            ${auto ? `<button data-edit-kind="${esc(a.kind)}">Configurar «${esc(kindLabel(a.kind))}»</button>`
+                   : `<button data-edit-rule="${esc(ruleId)}">Editar esta alerta</button>`}
+            <button data-open="${a.product_id}">Ver el producto</button>
+          </div></details>
       </div>
-    </div>`).join("") : `<div class="card muted">No hay alertas con estos filtros. 🎉</div>`;
+    </div>`;
+  }).join("") : `<div class="card muted">No hay alertas con estos filtros. 🎉</div>`;
   $$("#alert-list [data-ack]").forEach(b => b.addEventListener("click", () => ackAlerts([b.dataset.ack])));
-  $$("#alert-list .link").forEach(b => b.addEventListener("click", () => openDetail(+b.dataset.id)));
+  $$("#alert-list .link, #alert-list [data-open]").forEach(b => b.addEventListener("click", () => openDetail(+(b.dataset.id || b.dataset.open))));
+  $$("#alert-list [data-mute-kind]").forEach(b => b.addEventListener("click", () => muteProduct(b.dataset.muteKind, b.dataset.ref, b)));
+  $$("#alert-list [data-edit-kind]").forEach(b => b.addEventListener("click", () => openKindEditor(b.dataset.editKind)));
+  $$("#alert-list [data-edit-rule]").forEach(b => b.addEventListener("click", () => openRuleEditor(+b.dataset.editRule)));
 }
 function visibleAlerts() {
-  const k = $("#a-kind").value, showAck = $("#a-acked").checked;
-  return state.data.alerts.filter(a => (showAck || !a.acked) && (!state.sev || a.severity === state.sev) && (!k || a.kind === k));
+  const k = $("#a-kind").value, c = $("#a-categ").value, f = $("#a-family").value, showAck = $("#a-acked").checked;
+  const q = $("#a-search").value.trim().toLowerCase();
+  return state.data.alerts.filter(a => (showAck || !a.acked) && (!state.sev || a.severity === state.sev) && (!k || a.kind === k)
+    && (!c || a.categ === c) && (!f || a.family === f)
+    && (!q || a.ref.toLowerCase().includes(q) || a.name.toLowerCase().includes(q) || a.title.toLowerCase().includes(q)));
 }
 async function ackAlerts(keys) {
   await api("/api/alerts/ack", { method: "POST", body: JSON.stringify({ keys }) });
@@ -434,58 +462,276 @@ async function ackAlerts(keys) {
   renderAlerts(); renderCharts();
   $("#alert-count").textContent = state.data.alerts.filter(a => !a.acked && (a.severity === "critica" || a.severity === "alta")).length || "";
 }
-$("#a-kind").addEventListener("input", renderAlerts);
-$("#a-acked").addEventListener("input", renderAlerts);
+async function muteProduct(kind, ref, btn) {
+  try {
+    await api("/api/alert-config/mute", { method: "POST", body: JSON.stringify({ kind, ref }) });
+    await Promise.all([loadAlertConfig(), load()]);
+  } catch (e) { alertBox(btn.closest(".alert") || btn, e.message); }
+}
+["#a-kind", "#a-categ", "#a-family", "#a-acked", "#a-search"].forEach(s => $(s).addEventListener("input", renderAlerts));
 $("#ack-all").addEventListener("click", () => {
   const keys = visibleAlerts().filter(a => !a.acked).map(a => a.key);
   if (keys.length) ackAlerts(keys);
 });
+function alertBox(el, msg) { const d = document.createElement("div"); d.className = "warn"; d.textContent = msg; el.after(d); setTimeout(() => d.remove(), 6000); }
 
-/* ---------------------------------------------------------------- reglas */
+/* ---------------------------------------------------------------- configuración de alertas automáticas */
+function exclSummary(ex) {
+  const parts = Object.entries(FIELD_LABEL).filter(([f]) => ex[f]?.length).map(([f, l]) => `${l.toLowerCase()}: ${ex[f].join(", ")}`);
+  return parts.length ? "Sin avisos de " + parts.join(" · ") : "";
+}
+function ensureDatalists() {
+  const c = state.acfg;
+  const dl = (id, opts) => { let el = document.getElementById(id); if (!el) { el = document.createElement("datalist"); el.id = id; document.body.appendChild(el); } el.innerHTML = opts; };
+  dl("dl-products", c.products.map(p => `<option value="${esc(p.ref)}">${esc(p.name)}</option>`).join(""));
+  dl("dl-categories", c.categories.map(v => `<option value="${esc(v)}"></option>`).join(""));
+  dl("dl-families", c.families.map(v => `<option value="${esc(v)}"></option>`).join(""));
+}
+async function loadAlertConfig() {
+  if (STATIC) return;
+  try { state.acfg = await api("/api/alert-config"); } catch { return; }
+  ensureDatalists();
+  const sevOpts = (cur, def) => `<option value="auto" ${!cur ? "selected" : ""}>Automática (${esc(def)})</option>` +
+    state.acfg.severities.map(s => `<option value="${s}" ${cur === s ? "selected" : ""}>${SEV[s].label}</option>`).join("");
+  $("#auto-config").innerHTML = state.acfg.kinds.map(k => `
+    <div class="ac-row ${k.active ? "" : "off"}">
+      <label class="check ac-name"><input type="checkbox" data-kind-active="${k.kind}" ${k.active ? "checked" : ""}> <b>${esc(k.label)}</b></label>
+      <div class="ac-desc small muted">${esc(k.desc)}${exclSummary(k.exclude) ? `<br><span class="ac-excl">${esc(exclSummary(k.exclude))}</span>` : ""}</div>
+      <select data-kind-sev="${k.kind}" aria-label="Severidad de ${esc(k.label)}">${sevOpts(k.severity, k.default_severity)}</select>
+      <button class="btn ghost" data-kind-edit="${k.kind}">Editar</button>
+    </div>`).join("");
+  $$("#auto-config [data-kind-active]").forEach(c => c.addEventListener("input", () => saveKind(c.dataset.kindActive, { active: c.checked })));
+  $$("#auto-config [data-kind-sev]").forEach(s => s.addEventListener("input", () => saveKind(s.dataset.kindSev, { severity: s.value })));
+  $$("#auto-config [data-kind-edit]").forEach(b => b.addEventListener("click", () => openKindEditor(b.dataset.kindEdit)));
+  const g = state.acfg.global.exclude;
+  $("#global-excl").innerHTML = exclSummary(g) ? `<p>${esc(exclSummary(g))}</p>` : `<p class="small muted">Ninguno: recibes alertas de todos los productos.</p>`;
+}
+async function saveKind(kind, body) {
+  await api("/api/alert-config/" + encodeURIComponent(kind), { method: "PUT", body: JSON.stringify(body) });
+  await Promise.all([loadAlertConfig(), load()]);
+}
+$("#global-excl-edit").addEventListener("click", () => openKindEditor("*"));
+
+/* ---- editor genérico */
+const ae = { mode: null, id: null, confirmDelete: false };
+function aeMsg(text, cls = "err") { $("#ae-msg").className = "ae-msg " + cls; $("#ae-msg").textContent = text; }
+function aeOpen(title) {
+  $("#ae-title").textContent = title; aeMsg("", ""); ae.confirmDelete = false;
+  $("#ae-delete").textContent = "Eliminar";
+  if (!$("#alert-editor").open) $("#alert-editor").showModal();
+}
+["#ae-close", "#ae-cancel"].forEach(s => $(s).addEventListener("click", () => $("#alert-editor").close()));
+
+function chipList(field, values) {
+  return values.map(v => `<span class="xchip" data-f="${field}" data-v="${esc(v)}">${esc(v)}<button type="button" aria-label="Quitar ${esc(v)}">×</button></span>`).join("");
+}
+function exclEditorHtml(ex) {
+  return Object.entries(FIELD_LABEL).map(([f, label]) => `
+    <div class="xfield" data-field="${f}">
+      <div class="small"><b>${label}</b></div>
+      <div class="xchips">${chipList(f, ex[f] || [])}</div>
+      <div class="row"><input list="dl-${f}" placeholder="Añadir ${label.toLowerCase()}…" data-add="${f}"><button type="button" class="btn ghost" data-addbtn="${f}">Añadir</button></div>
+    </div>`).join("");
+}
+function bindChips(root) {
+  root.addEventListener("click", e => {
+    const x = e.target.closest(".xchip button");
+    if (x) { x.parentElement.remove(); return; }
+    const add = e.target.closest("[data-addbtn]");
+    if (add) addChip(root, add.dataset.addbtn);
+  });
+  $$("[data-add]", root).forEach(i => i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addChip(root, i.dataset.add); } }));
+}
+function addChip(root, f) {
+  const input = $(`[data-add="${f}"]`, root);
+  let v = input.value.trim();
+  if (!v) return;
+  if (f === "families") v = v.toUpperCase();
+  const box = $(`.xfield[data-field="${f}"] .xchips`, root);
+  if (![...box.children].some(c => c.dataset.v.toLowerCase() === v.toLowerCase())) box.insertAdjacentHTML("beforeend", chipList(f, [v]));
+  input.value = "";
+}
+function readChips(root) {
+  const ex = {};
+  Object.keys(FIELD_LABEL).forEach(f => ex[f] = $$(`.xfield[data-field="${f}"] .xchip`, root).map(c => c.dataset.v));
+  return ex;
+}
+
+/* ---- editor de un tipo automático (o de las exclusiones globales "*") */
+function openKindEditor(kind) {
+  if (!state.acfg) return;
+  const isGlobal = kind === "*";
+  const k = isGlobal ? { label: "Productos sin alertas", desc: "No recibirás ninguna alerta, automática ni personalizada, de lo que añadas aquí.", ...state.acfg.global, settings: [] }
+    : state.acfg.kinds.find(x => x.kind === kind);
+  ae.mode = "kind"; ae.id = kind;
+  $("#ae-delete").hidden = true;
+  const sevSel = isGlobal ? "" : `<label>Severidad<select name="severity"><option value="auto" ${!k.severity ? "selected" : ""}>Automática (${esc(k.default_severity)})</option>` +
+    state.acfg.severities.map(s => `<option value="${s}" ${k.severity === s ? "selected" : ""}>${SEV[s].label}</option>`).join("") + `</select></label>`;
+  $("#ae-body").innerHTML = `
+    <p class="muted">${esc(k.desc)}</p>
+    ${isGlobal ? "" : `<label class="check"><input type="checkbox" name="active" ${k.active ? "checked" : ""}> Alerta activa</label>`}
+    ${sevSel}
+    ${k.settings.length ? `<div class="ae-grid">${k.settings.map(st => `<label>${esc(SETTING_LABELS[st.key] || st.key)}<input type="number" step="any" name="set:${st.key}" value="${st.value}"></label>`).join("")}</div>
+      <p class="small muted">Los umbrales son generales: cambiarlos aquí también los cambia en Configuración.</p>` : ""}
+    <h3>${isGlobal ? "Sin alertas de…" : "No avisar de…"}</h3>
+    <div class="xedit">${exclEditorHtml(k.exclude)}</div>`;
+  bindChips($("#ae-body"));
+  aeOpen(isGlobal ? "Productos sin alertas" : `Alerta automática: ${k.label}`);
+}
+
+/* ---- editor de una alerta personalizada (nueva o existente) */
+function openRuleEditor(id = null) {
+  const r = id ? state.rules.rules.find(x => x.id === id) : { name: "", description: "", scope_type: "all", scope_values: [], metric: "on_hand", op: "<", threshold: "", severity: "media", active: true };
+  if (!r) return;
+  ae.mode = "rule"; ae.id = id;
+  $("#ae-delete").hidden = !id;
+  const opt = (obj, cur) => Object.entries(obj).map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`).join("");
+  $("#ae-body").innerHTML = `
+    <label>Nombre<input name="name" value="${esc(r.name)}" placeholder="p. ej. Cajas Cronidol bajas"></label>
+    <div class="ae-grid">
+      <label>Métrica<select name="metric">${opt(state.rules.metrics, r.metric)}</select></label>
+      <label>Condición<select name="op">${state.rules.ops.map(o => `<option ${o === r.op ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>
+      <label>Umbral<input name="threshold" type="number" step="any" value="${r.threshold}"></label>
+      <label>Severidad<select name="severity">${opt(Object.fromEntries(Object.entries(SEV).map(([k, v]) => [k, v.label])), r.severity)}</select></label>
+    </div>
+    <label>Aplicar a<select name="scope_type">${opt(SCOPE_LABEL, r.scope_type)}</select></label>
+    <div class="xedit" id="ae-scope"></div>
+    <label>Acción recomendada (opcional)<input name="description" value="${esc(r.description || "")}" placeholder="p. ej. Pedir cajas a Cartonajes"></label>
+    <label class="check"><input type="checkbox" name="active" ${r.active ? "checked" : ""}> Alerta activa</label>`;
+  const scopeField = { category: "categories", family: "families", products: "products" };
+  const renderScope = (type, values) => {
+    const f = scopeField[type];
+    $("#ae-scope").innerHTML = f ? `<div class="xfield" data-field="${f}"><div class="xchips">${chipList(f, values)}</div>
+      <div class="row"><input list="dl-${f}" placeholder="Añadir ${FIELD_LABEL[f].toLowerCase()}…" data-add="${f}"><button type="button" class="btn ghost" data-addbtn="${f}">Añadir</button></div></div>` : "";
+    $$("#ae-scope [data-add]").forEach(i => i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addChip($("#ae-scope"), i.dataset.add); } }));
+  };
+  renderScope(r.scope_type, r.scope_values);
+  $("#ae-scope").addEventListener("click", e => {
+    const x = e.target.closest(".xchip button"); if (x) x.parentElement.remove();
+    const add = e.target.closest("[data-addbtn]"); if (add) addChip($("#ae-scope"), add.dataset.addbtn);
+  });
+  $("#ae-body [name=scope_type]").addEventListener("input", e => renderScope(e.target.value, []));
+  aeOpen(id ? "Editar alerta personalizada" : "Nueva alerta personalizada");
+}
+
+$("#ae-save").addEventListener("click", async () => {
+  const body = $("#ae-body"), get = n => body.querySelector(`[name="${n}"]`);
+  const btn = $("#ae-save");
+  btn.disabled = true;
+  try {
+    if (ae.mode === "kind") {
+      const payload = { exclude: readChips(body) };
+      if (ae.id !== "*") {
+        payload.active = get("active").checked;
+        payload.severity = get("severity").value;
+        payload.settings = Object.fromEntries($$("[name^='set:']", body).map(i => [i.name.slice(4), parseFloat(i.value)]));
+      }
+      await api("/api/alert-config/" + encodeURIComponent(ae.id), { method: "PUT", body: JSON.stringify(payload) });
+      await Promise.all([loadAlertConfig(), loadSettings()]);
+    } else {
+      const type = get("scope_type").value;
+      const rule = { name: get("name").value, description: get("description").value, metric: get("metric").value,
+        op: get("op").value, threshold: get("threshold").value === "" ? null : parseFloat(get("threshold").value),
+        severity: get("severity").value, scope_type: type, active: get("active").checked,
+        scope_values: $$("#ae-scope .xchip").map(c => c.dataset.v) };
+      if (ae.id) await api("/api/rules/" + ae.id, { method: "PUT", body: JSON.stringify(rule) });
+      else await api("/api/rules", { method: "POST", body: JSON.stringify(rule) });
+      await loadRules();
+    }
+    $("#alert-editor").close();
+    load();
+  } catch (e) { aeMsg(e.message); } finally { btn.disabled = false; }
+});
+$("#ae-delete").addEventListener("click", async () => {
+  if (!ae.confirmDelete) { ae.confirmDelete = true; $("#ae-delete").textContent = "¿Seguro? Pulsa otra vez para eliminar"; return; }
+  try {
+    await api("/api/rules/" + ae.id, { method: "DELETE" });
+    $("#alert-editor").close();
+    await loadRules(); load();
+  } catch (e) { aeMsg(e.message); }
+});
+$("#rule-new").addEventListener("click", () => openRuleEditor());
+
+/* ---------------------------------------------------------------- alertas personalizadas */
+function ruleScope(r) {
+  return r.scope_type === "all" ? "Todos los productos" : `${SCOPE_LABEL[r.scope_type]}: ${r.scope_values.join(", ")}`;
+}
 async function loadRules() {
   state.rules = await api("/api/rules");
-  $("#rule-metric").innerHTML = Object.entries(state.rules.metrics).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
-  const scope = r => r.scope_type === "all" ? "Todos los productos" : (r.scope_type === "category" ? "Categorías: " : "Refs.: ") + r.scope_values.join(", ");
   $("#rules").innerHTML = state.rules.rules.length ? state.rules.rules.map(r => `
-    <div class="rule">
-      <div>${sevBadge(r.severity)} <b>${esc(r.name)}</b><div class="small muted">${esc(scope(r))} · ${esc(state.rules.metrics[r.metric])} ${esc(r.op)} ${fmt(r.threshold, 1)}${r.description ? " · " + esc(r.description) : ""}</div></div>
+    <div class="rule ${r.active ? "" : "off"}">
+      <div>${sevBadge(r.severity)} <b>${esc(r.name)}</b><div class="small muted">${esc(ruleScope(r))} · ${esc(state.rules.metrics[r.metric] || r.metric)} ${esc(r.op)} ${fmt(r.threshold, 1)}${r.description ? " · " + esc(r.description) : ""}</div></div>
       <div class="row">
         <label class="check small"><input type="checkbox" data-toggle="${r.id}" ${r.active ? "checked" : ""}> Activa</label>
-        <button class="btn ghost" data-del="${r.id}">Eliminar</button>
+        <button class="btn ghost" data-edit="${r.id}">Editar</button>
+        <button class="btn ghost danger" data-del="${r.id}">Eliminar</button>
       </div>
     </div>`).join("") : `<p class="muted small">Aún no hay alertas personalizadas.</p>`;
   $$("#rules [data-toggle]").forEach(c => c.addEventListener("input", async () => {
     await api("/api/rules/" + c.dataset.toggle, { method: "PATCH", body: JSON.stringify({ active: c.checked }) });
-    load();
+    await loadRules(); load();
   }));
+  $$("#rules [data-edit]").forEach(b => b.addEventListener("click", () => openRuleEditor(+b.dataset.edit)));
   $$("#rules [data-del]").forEach(b => b.addEventListener("click", async () => {
+    if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = "¿Seguro?"; setTimeout(() => { b.dataset.confirm = ""; b.textContent = "Eliminar"; }, 4000); return; }
     await api("/api/rules/" + b.dataset.del, { method: "DELETE" });
-    loadRules(); load();
+    await loadRules(); load();
   }));
 }
 async function saveRule(rule) {
   await api("/api/rules", { method: "POST", body: JSON.stringify(rule) });
   await loadRules(); await load();
 }
-$("#rule-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  const f = Object.fromEntries(new FormData(e.target));
-  f.scope_values = f.scope_values ? f.scope_values.split(",").map(s => s.trim()).filter(Boolean) : [];
-  f.threshold = parseFloat(f.threshold);
-  try { await saveRule(f); e.target.reset(); } catch (err) { alertBox(e.target, err.message); }
-});
-function alertBox(el, msg) { const d = document.createElement("div"); d.className = "warn"; d.textContent = msg; el.after(d); setTimeout(() => d.remove(), 6000); }
 
+/* ---------------------------------------------------------------- propuestas del asistente */
+function exclText(ex) {
+  return Object.entries(FIELD_LABEL).filter(([f]) => ex?.[f]?.length).map(([f, l]) => `${l.toLowerCase()} ${ex[f].join(", ")}`).join("; ");
+}
 function proposalHtml(p, i) {
-  const scope = p.scope_type === "all" ? "todos los productos" : p.scope_values.join(", ");
-  return `<div class="proposal">${sevBadge(p.severity)} <b>${esc(p.name)}</b>
-    <div class="small muted">Ámbito: ${esc(scope)} · ${esc(state.rules?.metrics?.[p.metric] || p.metric)} ${esc(p.op)} ${fmt(p.threshold, 1)}${p.description ? " · " + esc(p.description) : ""}</div>
-    <div class="row"><button class="btn primary" data-save="${i}">Guardar alerta</button><span class="small muted">Propuesta de la IA: no se guarda hasta que la confirmes.</span></div></div>`;
+  const action = p.action || "create";
+  let title = "", detail = "", button = "Aplicar";
+  if (action === "create") {
+    const r = p.rule || p;
+    title = `${sevBadge(r.severity)} Nueva alerta: <b>${esc(r.name)}</b>`;
+    detail = `${esc(ruleScope(r))} · ${esc(state.rules?.metrics?.[r.metric] || r.metric)} ${esc(r.op)} ${fmt(r.threshold, 1)}${r.description ? " · " + esc(r.description) : ""}`;
+    button = "Guardar alerta";
+  } else if (action === "update") {
+    const b = p.before, a = p.after;
+    title = `Modificar alerta: <b>${esc(b.name)}</b>`;
+    const diffs = Object.keys(p.changes).map(k => {
+      const show = v => k === "severity" ? SEV[v]?.label : k === "metric" ? state.rules?.metrics?.[v] : Array.isArray(v) ? v.join(", ") : k === "active" ? (v ? "activa" : "desactivada") : v;
+      const FIELD = { name: "Nombre", description: "Acción", scope_type: "Aplicar a", scope_values: "Productos/familias",
+        metric: "Métrica", op: "Condición", threshold: "Umbral", severity: "Severidad", active: "Estado" };
+      const val = v => k === "scope_type" ? SCOPE_LABEL[v] : show(v);
+      return `${esc(FIELD[k] || k)}: ${esc(String(val(b[k]) ?? "—"))} → <b>${esc(String(val(a[k]) ?? "—"))}</b>`;
+    });
+    detail = diffs.join(" · ");
+  } else if (action === "delete") {
+    title = `Eliminar alerta: <b>${esc(p.before.name)}</b>`;
+    detail = esc(ruleScope(p.before));
+    button = "Eliminar alerta";
+  } else if (action === "auto_config") {
+    title = `Alerta automática: <b>${esc(p.label)}</b>`;
+    const parts = [];
+    if ("active" in p) parts.push(p.active ? "activarla" : "desactivarla");
+    if ("severity" in p) parts.push(p.severity === "auto" ? "severidad automática" : `severidad ${SEV[p.severity]?.label}`);
+    if (p.add_exclusions && exclText(p.add_exclusions)) parts.push(`no avisar de ${exclText(p.add_exclusions)}`);
+    if (p.remove_exclusions && exclText(p.remove_exclusions)) parts.push(`volver a avisar de ${exclText(p.remove_exclusions)}`);
+    detail = esc(parts.join(" · "));
+  }
+  return `<div class="proposal">${title}<div class="small muted">${detail}</div>
+    <div class="row"><button class="btn primary" data-apply="${i}">${button}</button><span class="small muted">Propuesta de la IA: no cambia nada hasta que la apliques.</span></div></div>`;
 }
 function bindProposals(container, proposals) {
-  $$("[data-save]", container).forEach(b => b.addEventListener("click", async () => {
+  $$("[data-apply]", container).forEach(b => b.addEventListener("click", async () => {
     b.disabled = true;
-    try { await saveRule(proposals[+b.dataset.save]); b.textContent = "Guardada ✓"; } catch (e) { b.disabled = false; alertBox(b, e.message); }
+    const p = proposals[+b.dataset.apply];
+    try {
+      if (STATIC) await saveRule(p.rule || p);
+      else await api("/api/proposals/apply", { method: "POST", body: JSON.stringify(p) });
+      b.textContent = "Aplicado ✓";
+      await Promise.all([loadRules(), loadAlertConfig()]); load();
+    } catch (e) { b.disabled = false; alertBox(b, e.message); }
   }));
 }
 $("#nl-rule-btn").addEventListener("click", async () => {
@@ -493,9 +739,10 @@ $("#nl-rule-btn").addEventListener("click", async () => {
   if (!text) return;
   const out = $("#nl-rule-out"), b = $("#nl-rule-btn");
   b.disabled = true;
-  out.innerHTML = `<p class="small"><span class="spinner"></span>Preparando la alerta…</p>`;
+  out.innerHTML = `<p class="small"><span class="spinner"></span>Preparando el cambio…</p>`;
   try {
-    const r = await api("/api/ai/chat", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "Crea una alerta personalizada (usa proponer_alerta; comprueba antes referencias o categorías si hace falta): " + text }] }) });
+    const r = await api("/api/ai/chat", { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content:
+      "Gestión de alertas (consulta antes listar_reglas_alerta y usa la herramienta de propuesta adecuada): " + text }] }) });
     out.innerHTML = `<div class="md small">${md(r.text)}</div>` + r.proposals.map(proposalHtml).join("");
     bindProposals(out, r.proposals);
   } catch (e) { out.innerHTML = `<div class="warn">${esc(e.message)}</div>`; } finally { b.disabled = false; }
@@ -811,7 +1058,8 @@ $("#setup-next").addEventListener("click", async () => {
     }) });
     $("#setup").close();
     await refreshConnection();
-    load(true);
+    await load(true);
+    maybeTour();
   } catch (e) {
     setMsg($("#test-ai-msg"), "err", esc(e.message));
   } finally { btn.disabled = false; }
@@ -868,6 +1116,142 @@ async function checkVersion() {
   } catch {}
 }
 
+/* ---------------------------------------------------------------- guía de uso (recorrido) */
+const TOUR = [
+  { title: "Bienvenido a Panel Inventario",
+    text: "En un par de minutos te enseño todo lo que puedes hacer: ver el estado del inventario, saber qué pedir, decidir qué alertas quieres y preguntar a la IA. Usa «Siguiente» o las flechas del teclado; puedes salir cuando quieras." },
+  { tab: "resumen", target: "#kpis", title: "Los indicadores clave",
+    text: "Valor del stock, rotación, alertas urgentes, cuánto hay que pedir, exceso, stock parado y compras en curso. Se calculan con tus datos de Odoo cada vez que abres la app o pulsas «Actualizar»." },
+  { tab: "resumen", target: ".ai-card", title: "Resumen con IA",
+    text: "Pulsa «Generar resumen» y el asistente revisa todo el inventario y te dice en una página qué pedir, qué riesgos hay y dónde hay dinero parado. Ideal para empezar la semana." },
+  { tab: "resumen", target: () => $("#ch-coverage")?.closest(".card"), title: "Gráficos",
+    text: "Cuántos productos están en riesgo de rotura, qué tipos de alerta tienes, el valor por categoría y la matriz ABC/XYZ (importancia y regularidad de cada producto). Pasa el ratón por encima para ver las cifras." },
+  { tab: "productos", target: () => $("#f-text")?.closest(".filters"), title: "Buscar y filtrar productos",
+    text: "Busca por referencia o nombre y filtra por categoría, clase ABC o situación: en riesgo, con pedido sugerido, en exceso o sin movimiento. Pulsa los títulos de las columnas para ordenar." },
+  { tab: "productos", target: "#products", title: "El detalle de cada producto",
+    text: "Pulsa una fila para ver su demanda semanal y la previsión, cuándo se quedaría sin stock, la cantidad sugerida a pedir, el stock por lote y ubicación y en qué productos se usa. Desde ahí también puedes preguntar a la IA por ese producto." },
+  { tab: "alertas", target: "#alert-filters", title: "Tus alertas, por urgencia",
+    text: "Filtra por severidad: crítica, alta, media o baja. El número rojo de la pestaña son las críticas y altas que aún no has visto." },
+  { tab: "alertas", target: () => $("#a-search")?.closest(".filters"), title: "Filtra por tipo, categoría o familia",
+    text: "Encuentra rápido las alertas de una categoría de Odoo o de una familia de referencia (BOX, ENV, MC…). «Marcar visibles como vistas» las archiva todas de golpe; vuelven a salir pasados unos días si el problema sigue." },
+  { tab: "alertas", target: () => $("#alert-list .alert") || $("#alert-list"), title: "Cada alerta",
+    text: "Te dice qué pasa, qué hacer y su impacto. En «Opciones» puedes dejar de recibir avisos de ese producto (solo de ese tipo o de ninguno) o configurar ese tipo de alerta." },
+  { tab: "alertas", target: "#auto-config-card", title: "Tú decides qué alertas quieres",
+    text: "Activa o desactiva cada tipo de alerta automática, cámbiale la severidad y pulsa «Editar» para ajustar sus umbrales o excluir productos, categorías o familias." },
+  { tab: "alertas", target: "#global-excl-card", title: "Productos sin alertas",
+    text: "Lo que añadas aquí no generará ninguna alerta. Útil para productos descatalogados, muestras o material que no gestionas tú." },
+  { tab: "alertas", target: "#rules-card", title: "Tus propias alertas",
+    text: "Crea alertas a tu medida con «+ Nueva alerta» (por ejemplo, «avísame si las cajas de Cronidol bajan de 5.000»), o escríbelo y pulsa «Pedir a la IA». Puedes editarlas, pausarlas o eliminarlas cuando quieras." },
+  { tab: "asistente", target: "#chat-form", title: "Pregunta lo que quieras",
+    text: "El asistente consulta el panel y tu Odoo (solo lectura) para responder: qué pedir esta semana, cómo va un producto, qué compras están retrasadas… También puede crear, cambiar o eliminar alertas por ti: siempre te enseña el cambio y tú lo aplicas con un botón." },
+  { tab: "asistente", target: "#suggestions", title: "Ideas para empezar",
+    text: "Pulsa cualquiera de estas preguntas de ejemplo. Debajo de cada respuesta verás qué consultas ha hecho y cuánto ha costado." },
+  { tab: "config", target: "#settings-form", title: "Ajusta la app a tu forma de trabajar",
+    text: "Plazo de entrega por defecto, nivel de servicio, umbrales de alertas… Y en «Contexto de la empresa» cuéntale al asistente cómo trabajáis: sus respuestas mejorarán mucho." },
+  { target: "#conn-chip", title: "Tu conexión",
+    text: "Aquí cambias la conexión con Odoo o el modelo de IA. En Configuración → Conexiones verás también cuánto llevas gastado en IA este mes." },
+  { target: "#refresh", title: "Datos al día",
+    text: "La app vuelve a leer Odoo cada 15 minutos; pulsa «Actualizar» si acabas de hacer cambios en Odoo y quieres verlos ya." },
+  { target: "#tour-btn", title: "¡Listo!",
+    text: "Puedes volver a ver esta guía cuando quieras desde este botón. Cuando haya una versión nueva de la app, te avisará arriba con las instrucciones para actualizar." },
+];
+const tour = { i: 0, on: false };
+
+function tourEls() {
+  if (!$("#tour-pop")) {
+    document.body.insertAdjacentHTML("beforeend", `
+      <div id="tour-block" class="tour-block" hidden></div>
+      <div id="tour-spot" class="tour-spot" hidden></div>
+      <div id="tour-pop" class="tour-pop" role="dialog" aria-modal="true" aria-labelledby="tour-title" hidden>
+        <div class="tour-step" id="tour-step"></div>
+        <h3 id="tour-title"></h3>
+        <p id="tour-text"></p>
+        <div class="tour-actions">
+          <button class="btn ghost" id="tour-skip">Saltar guía</button>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="tour-prev">← Anterior</button>
+          <button class="btn primary" id="tour-next">Siguiente →</button>
+        </div>
+      </div>`);
+    $("#tour-skip").addEventListener("click", () => endTour());
+    $("#tour-prev").addEventListener("click", () => tourGo(tour.i - 1));
+    $("#tour-next").addEventListener("click", () => tour.i >= TOUR.length - 1 ? endTour() : tourGo(tour.i + 1));
+    $("#tour-block").addEventListener("click", () => {});
+  }
+}
+function startTour() {
+  tourEls();
+  $$("dialog[open]").forEach(d => d.close());
+  tour.on = true;
+  ["#tour-block", "#tour-pop"].forEach(s => $(s).hidden = false);
+  tourGo(0);
+}
+function endTour() {
+  tour.on = false;
+  ["#tour-block", "#tour-spot", "#tour-pop"].forEach(s => $(s).hidden = true);
+  LS.set("tour-done", true);
+}
+function tourTarget(step) {
+  if (!step.target) return null;
+  const el = typeof step.target === "function" ? step.target() : $(step.target);
+  return el && !el.hidden && el.offsetParent !== null ? el : null;
+}
+function tourGo(i) {
+  tour.i = Math.max(0, Math.min(TOUR.length - 1, i));
+  const step = TOUR[tour.i];
+  if (step.tab) showTab(step.tab);
+  $("#tour-step").textContent = `Paso ${tour.i + 1} de ${TOUR.length}`;
+  $("#tour-title").textContent = step.title;
+  $("#tour-text").textContent = step.text;
+  $("#tour-prev").disabled = tour.i === 0;
+  $("#tour-next").textContent = tour.i === TOUR.length - 1 ? "Terminar" : "Siguiente →";
+  const el = tourTarget(step);
+  if (el) {
+    // Elementos altos: arriba del todo (bajo la cabecera) para que quepa la explicación debajo
+    const tall = el.getBoundingClientRect().height > window.innerHeight * 0.4;
+    el.scrollIntoView({ block: tall ? "start" : "center", behavior: "instant" });
+    if (tall) window.scrollBy(0, -20);
+  }
+  requestAnimationFrame(() => tourPlace(el));
+  $("#tour-next").focus();
+}
+function tourPlace(el) {
+  const spot = $("#tour-spot"), pop = $("#tour-pop");
+  const vw = window.innerWidth, vh = window.innerHeight, pad = 8, gap = 14;
+  $("#tour-block").classList.toggle("dim", !el);
+  if (!el) {
+    spot.hidden = true;
+    pop.style.left = Math.max(16, (vw - pop.offsetWidth) / 2) + "px";
+    pop.style.top = Math.max(16, (vh - pop.offsetHeight) / 2) + "px";
+    return;
+  }
+  const r = el.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const top = Math.max(4, r.top - pad), left = Math.max(4, r.left - pad);
+  // Elementos más altos que el hueco disponible: se resalta su parte superior y la explicación va debajo
+  const room = vh - top - ph - gap - 16;
+  const height = Math.min(r.height + pad * 2, vh - top - 4, Math.max(120, room));
+  const width = Math.min(r.width + pad * 2, vw - left - 4);
+  Object.assign(spot.style, { top: top + "px", left: left + "px", width: width + "px", height: height + "px" });
+  spot.hidden = false;
+  let pt, pl = Math.min(Math.max(16, left), vw - pw - 16);
+  if (vh - (top + height) >= ph + gap + 16) pt = top + height + gap;   // debajo
+  else if (top >= ph + gap + 16) pt = top - ph - gap;                  // encima
+  else { pt = vh - ph - 16; pl = vw - pw - 16; }                        // no cabe: esquina inferior derecha
+  pop.style.top = pt + "px"; pop.style.left = pl + "px";
+}
+window.addEventListener("resize", () => { if (tour.on) tourPlace(tourTarget(TOUR[tour.i])); });
+document.addEventListener("keydown", e => {
+  if (!tour.on) return;
+  if (e.key === "Escape") { e.preventDefault(); endTour(); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); $("#tour-next").click(); }
+  else if (e.key === "ArrowLeft" && tour.i > 0) { e.preventDefault(); tourGo(tour.i - 1); }
+});
+$("#tour-btn").addEventListener("click", startTour);
+function maybeTour() {
+  if (!LS.get("tour-done", false) && !$$("dialog[open]").length) setTimeout(startTour, 400);
+}
+
 /* ---- arranque */
 async function start() {
   if (STATIC) {
@@ -877,8 +1261,8 @@ async function start() {
     return;
   }
   await refreshConnection();
-  loadRules(); loadSettings(); checkVersion();
-  if (setup.status?.configured) load();
+  loadRules(); loadSettings(); loadAlertConfig(); checkVersion();
+  if (setup.status?.configured) { await load(); maybeTour(); }
   else {
     $("#warnings").innerHTML = `<div class="warn">Configura la conexión con Odoo y el proveedor de IA para empezar.</div>`;
     openSetup();

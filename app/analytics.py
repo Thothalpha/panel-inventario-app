@@ -12,6 +12,7 @@ La precisión se mide con backtest: se ajusta sin las últimas 12 semanas y se c
 
 import math
 import statistics
+from .alerts import family as _family
 from datetime import date, timedelta
 
 Z_TABLE = {0.80: 0.842, 0.85: 1.036, 0.90: 1.282, 0.95: 1.645, 0.975: 1.960, 0.98: 2.054, 0.99: 2.326}
@@ -229,7 +230,7 @@ def compute(snapshot: dict, settings: dict) -> dict:
         rows[pid] = {
             **{k: p[k] for k in ("id", "ref", "name", "categ", "uom", "on_hand", "free", "virtual", "incoming",
                                  "outgoing", "cost", "price")},
-            "value": round(stock_base * p["cost"], 2),
+            "family": _family(p["ref"]), "value": round(stock_base * p["cost"], 2),
             "demand_4w": last4, "demand_13w": last13, "demand_52w": last52,
             "daily_forecast": round(daily, 3), "forecast_30d": round(daily * 30, 1),
             "forecast_90d": round(sum(fc["forecast"][:13]) if h >= 13 else daily * 90, 1),

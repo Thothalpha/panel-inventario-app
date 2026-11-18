@@ -160,10 +160,75 @@ async def toggle_rule(rule_id: int, req: Request):
     return {"ok": True}
 
 
+@app.put("/api/rules/{rule_id}")
+async def edit_rule(rule_id: int, req: Request):
+    try:
+        return alerts.update_rule(rule_id, await req.json())
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(400, str(e))
+
+
 @app.delete("/api/rules/{rule_id}")
 def remove_rule(rule_id: int):
-    alerts.delete_rule(rule_id)
+    try:
+        alerts.delete_rule(rule_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
     return {"ok": True}
+
+
+# ----------------------------------------------------------------------------- configuración de alertas
+@app.get("/api/alert-config")
+def alert_config():
+    s = config.load_settings()
+    cfgs = alerts.kind_configs()
+    try:
+        _, _, metrics, _ = state()
+        cats = sorted({r["categ"] for r in metrics.values()}, key=str.lower)
+        fams = sorted({r["family"] for r in metrics.values()})
+        refs = sorted(({"ref": r["ref"], "name": r["name"]} for r in metrics.values() if r["ref"]), key=lambda x: x["ref"])
+    except Exception:  # sin conexión todavía: la configuración se puede ver igual
+        cats, fams, refs = [], [], []
+    kinds = [{"kind": k, **meta, "settings": [{"key": sk, "value": s[sk]} for sk in meta["settings"]], **cfgs[k]}
+             for k, meta in alerts.AUTO_KINDS.items()]
+    return {"kinds": kinds, "global": cfgs[alerts.GLOBAL], "categories": cats, "families": fams, "products": refs,
+            "severities": alerts.SEVERITIES}
+
+
+@app.put("/api/alert-config/{kind}")
+async def save_alert_config(kind: str, req: Request):
+    b = await req.json()
+    try:
+        cfg = alerts.set_kind_config(kind, active=b.get("active"),
+                                     severity=b["severity"] if "severity" in b else "__keep__",
+                                     exclude=b.get("exclude"))
+        if b.get("settings"):
+            allowed = set(alerts.AUTO_KINDS.get(kind, {}).get("settings", []))
+            config.save_settings({k: v for k, v in b["settings"].items() if k in allowed})
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+    return cfg
+
+
+@app.post("/api/alert-config/mute")
+async def mute_product(req: Request):
+    """«No avisar de este producto»: para un tipo de alerta concreto o para todas (kind = '*')."""
+    b = await req.json()
+    kind = b.get("kind") or alerts.GLOBAL
+    if kind not in alerts.AUTO_KINDS and kind != alerts.GLOBAL:
+        raise HTTPException(400, "Las alertas personalizadas se ajustan editando su regla")
+    if not b.get("ref"):
+        raise HTTPException(400, "Falta la referencia del producto")
+    return alerts.change_exclusions(kind, add={"products": [b["ref"]]})
+
+
+@app.post("/api/proposals/apply")
+async def apply_proposal(req: Request):
+    """Aplica un cambio de alertas propuesto por el asistente; siempre a petición del usuario."""
+    try:
+        return alerts.apply_proposal(await req.json())
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/settings")

@@ -42,7 +42,10 @@ Cómo trabajas:
 - Las cifras salen de las herramientas, nunca de suposiciones. Si un dato no está, dilo y explica cómo conseguirlo.
 - Empieza por las herramientas del panel (resumen_inventario, buscar_productos, detalle_producto, listar_alertas): ya traen previsión, cobertura, stock de seguridad, punto de pedido y cantidad sugerida. Usa consulta_odoo / agregado_odoo solo para lo que el panel no tiene (pedidos concretos, proveedores, movimientos, fabricaciones, clientes...).
 - Las consultas a Odoo son de solo lectura. No puedes crear ni modificar nada en Odoo: si algo requiere una acción (pedir, ajustar, cambiar una regla), recomiéndala y di quién debe hacerla.
-- Cuando el usuario pida que le avises de algo, que vigiles algo o crear una alerta, usa proponer_alerta; la regla queda como propuesta y el usuario la guarda con un botón. No digas que está guardada.
+- Gestión de alertas: el usuario decide qué alertas quiere, de qué productos y con qué severidad. Antes de cambiar nada, consulta listar_reglas_alerta.
+  · Crear una alerta personalizada → proponer_alerta. Modificarla → proponer_modificar_alerta. Eliminarla → proponer_eliminar_alerta.
+  · Alertas automáticas (sin stock, exceso, caducidad…): activar/desactivar un tipo, cambiar su severidad o dejar de avisar de productos, categorías o familias de referencia (prefijo: BOX, ENV, MC…) → proponer_config_automatica. Para no avisar de un producto en ninguna alerta usa kind "*".
+  · Todo queda como PROPUESTA: el usuario la aplica con un botón. Nunca digas que ya está hecho; di qué cambiará al aplicarla.
 - Distingue hechos de estimaciones: la previsión es estadística (Holt amortiguado / Croston-SBA, con su precisión de backtest); avisa si la precisión es baja (< 0,5) o la historia corta.
 - La demanda incluye ventas y consumo en fabricación. Cobertura = stock a mano / demanda diaria prevista. Plazo de entrega = el del proveedor en Odoo o el valor por defecto.
 - Si el panel está en MODO DEMO, menciónalo una vez: los datos no son en vivo."""
@@ -96,15 +99,44 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "name": {"type": "string", "description": "Título corto de la alerta"},
          "description": {"type": "string", "description": "Acción recomendada cuando salte"},
-         "scope_type": {"type": "string", "enum": ["all", "category", "products"]},
+         "scope_type": {"type": "string", "enum": ["all", "category", "family", "products"]},
          "scope_values": {"type": "array", "items": {"type": "string"},
-                          "description": "Nombres de categoría o referencias exactas de producto según scope_type"},
+                          "description": "Según scope_type: nombres de categoría, familias de referencia (prefijo antes del guion: BOX, ENV, MC…) o referencias exactas de producto"},
          "metric": {"type": "string", "enum": list(alerts_mod.METRICS)},
          "op": {"type": "string", "enum": list(alerts_mod.OPS)},
          "threshold": {"type": "number"},
          "severity": {"type": "string", "enum": alerts_mod.SEVERITIES}},
          "required": ["name", "scope_type", "scope_values", "metric", "op", "threshold", "severity"],
          "additionalProperties": False}},
+    {"name": "listar_reglas_alerta",
+     "description": "Configuración actual de las alertas: alertas personalizadas (con su id), tipos automáticos (activo, severidad, productos/categorías/familias excluidos, umbrales) y exclusiones globales. Úsala antes de proponer cambios.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "proponer_modificar_alerta",
+     "description": "Propone modificar una alerta PERSONALIZADA existente (por su id). Indica solo los campos que cambian; para desactivarla sin borrarla usa active=false.",
+     "input_schema": {"type": "object", "properties": {
+         "rule_id": {"type": "integer"},
+         "name": {"type": "string"}, "description": {"type": "string"},
+         "scope_type": {"type": "string", "enum": list(alerts_mod.SCOPES)},
+         "scope_values": {"type": "array", "items": {"type": "string"}},
+         "metric": {"type": "string", "enum": list(alerts_mod.METRICS)},
+         "op": {"type": "string", "enum": list(alerts_mod.OPS)},
+         "threshold": {"type": "number"},
+         "severity": {"type": "string", "enum": alerts_mod.SEVERITIES},
+         "active": {"type": "boolean"}},
+         "required": ["rule_id"], "additionalProperties": False}},
+    {"name": "proponer_eliminar_alerta",
+     "description": "Propone eliminar una alerta PERSONALIZADA (por su id).",
+     "input_schema": {"type": "object", "properties": {"rule_id": {"type": "integer"}}, "required": ["rule_id"],
+                      "additionalProperties": False}},
+    {"name": "proponer_config_automatica",
+     "description": "Propone cambiar una alerta AUTOMÁTICA: activarla/desactivarla, fijar su severidad ('auto' = la que calcula el panel) o añadir/quitar productos, categorías o familias excluidos. kind '*' = exclusiones para TODAS las alertas. Tipos: " + ", ".join(f"{k} ({v['label']})" for k, v in alerts_mod.AUTO_KINDS.items()),
+     "input_schema": {"type": "object", "properties": {
+         "kind": {"type": "string", "enum": list(alerts_mod.AUTO_KINDS) + ["*"]},
+         "active": {"type": "boolean"},
+         "severity": {"type": "string", "enum": ["auto"] + alerts_mod.SEVERITIES},
+         "add_exclusions": {"type": "object", "properties": {"products": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas"}, "categories": {"type": "array", "items": {"type": "string"}, "description": "Categorías de producto de Odoo"}, "families": {"type": "array", "items": {"type": "string"}, "description": "Prefijos de referencia (BOX, ENV, MC…)"}}, "additionalProperties": False},
+         "remove_exclusions": {"type": "object", "properties": {"products": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas"}, "categories": {"type": "array", "items": {"type": "string"}, "description": "Categorías de producto de Odoo"}, "families": {"type": "array", "items": {"type": "string"}, "description": "Prefijos de referencia (BOX, ENV, MC…)"}}, "additionalProperties": False}},
+         "required": ["kind"], "additionalProperties": False}},
 ]
 
 
@@ -219,9 +251,43 @@ def run_tool(name, args, ctx):
         for r in rows:
             r.pop("__domain", None)
         return {"grupos": rows[:300], "n": len(rows)}
+    if name == "listar_reglas_alerta":
+        cfgs = alerts_mod.kind_configs()
+        return {"personalizadas": alerts_mod.list_rules(),
+                "automaticas": {k: {**v, "nombre": alerts_mod.AUTO_KINDS[k]["label"],
+                                    "umbrales": {sk: s[sk] for sk in alerts_mod.AUTO_KINDS[k]["settings"]}}
+                                for k, v in cfgs.items() if k in alerts_mod.AUTO_KINDS},
+                "exclusiones_globales": cfgs[alerts_mod.GLOBAL]["exclude"],
+                "familias_disponibles": sorted({r["family"] for r in metrics.values()}),
+                "categorias_disponibles": sorted({r["categ"] for r in metrics.values()})}
+    if name == "proponer_modificar_alerta":
+        rid = int(args["rule_id"])
+        before = alerts_mod.get_rule(rid)
+        changes = {k: v for k, v in args.items() if k != "rule_id"}
+        after = alerts_mod.validate_rule({**before, **changes})  # valida sin guardar
+        ctx["proposals"].append({"action": "update", "rule_id": rid, "changes": changes, "before": before, "after": after})
+        return {"propuesta": "modificar", "antes": before, "despues": after,
+                "nota": "Pendiente de que el usuario pulse Aplicar."}
+    if name == "proponer_eliminar_alerta":
+        rid = int(args["rule_id"])
+        before = alerts_mod.get_rule(rid)
+        ctx["proposals"].append({"action": "delete", "rule_id": rid, "before": before})
+        return {"propuesta": "eliminar", "alerta": before, "nota": "Pendiente de que el usuario pulse Aplicar."}
+    if name == "proponer_config_automatica":
+        kind = args["kind"]
+        if kind not in alerts_mod.AUTO_KINDS and kind != alerts_mod.GLOBAL:
+            return {"error": f"Tipo no válido: {kind}"}
+        if kind == alerts_mod.GLOBAL and ("active" in args or "severity" in args):
+            return {"error": "Para '*' solo se pueden cambiar exclusiones"}
+        p = {"action": "auto_config", "kind": kind, "label": alerts_mod.AUTO_KINDS.get(kind, {}).get("label", "Todas las alertas"),
+             **{k: args[k] for k in ("active", "severity", "add_exclusions", "remove_exclusions") if k in args}}
+        if not any(k in p for k in ("active", "severity", "add_exclusions", "remove_exclusions")):
+            return {"error": "No hay ningún cambio que proponer"}
+        ctx["proposals"].append(p)
+        return {"propuesta": p, "actual": alerts_mod.kind_configs()[kind], "nota": "Pendiente de que el usuario pulse Aplicar."}
     if name == "proponer_alerta":
         rule = alerts_mod.validate_rule(args)
-        ctx["proposals"].append(rule)
+        ctx["proposals"].append({"action": "create", "rule": rule, **rule})
         # Previsualizar a qué productos afectaría hoy
         hits = []
         vals = {v.lower() for v in rule["scope_values"]}
@@ -230,11 +296,13 @@ def run_tool(name, args, ctx):
                 continue
             if rule["scope_type"] == "products" and r["ref"].lower() not in vals:
                 continue
+            if rule["scope_type"] == "family" and r["family"].lower() not in vals:
+                continue
             v = r.get(rule["metric"])
             if v is not None and alerts_mod.OPS[rule["op"]](float(v), rule["threshold"]):
                 hits.append(r["ref"])
         return {"propuesta": rule, "saltaria_hoy_en": hits[:30], "n_productos_hoy": len(hits),
-                "nota": "Propuesta pendiente de que el usuario pulse Guardar."}
+                "nota": "Pendiente de que el usuario pulse Aplicar."}
     return {"error": f"Herramienta desconocida: {name}"}
 
 

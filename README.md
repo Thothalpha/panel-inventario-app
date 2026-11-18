@@ -11,9 +11,11 @@ Anthropic o cualquier servidor compatible con la API de OpenAI.
 |---|---|
 | **Resumen** | KPIs (valor de stock, rotación, alertas urgentes, a pedir, exceso, stock parado, compras en curso, precisión de la previsión), resumen con IA, cobertura por tramos, alertas por tipo, valor por categoría, matriz ABC/XYZ y mayor demanda prevista |
 | **Productos** | Tabla filtrable y ordenable. Cada producto tiene detalle con su demanda semanal y previsión (banda del 80 %), la proyección de stock frente al punto de pedido y al stock de seguridad, el stock por ubicación y lote, las compras pendientes y la lista de materiales |
-| **Alertas** | Alertas automáticas y personalizadas, con severidad, acción recomendada e impacto estimado. Las personalizadas se pueden crear a mano o pidiéndoselas a la IA |
-| **Asistente IA** | Chat que consulta las métricas del panel y Odoo (solo lectura). Muestra las consultas que ha hecho y el coste de cada respuesta |
+| **Alertas** | Alertas automáticas y personalizadas, con severidad, acción recomendada e impacto estimado. Filtros por severidad, tipo, categoría, familia de referencia (prefijo: BOX, ENV, MC…) y texto. Tú decides qué alertas quieres: activa o desactiva cada tipo automático, cambia su severidad y umbrales, excluye productos, categorías o familias (de un tipo o de todas las alertas) y crea, edita o elimina tus propias alertas |
+| **Asistente IA** | Chat que consulta las métricas del panel y Odoo (solo lectura). Muestra las consultas que ha hecho y el coste de cada respuesta. También gestiona las alertas: propone crearlas, modificarlas, eliminarlas o configurar las automáticas, y tú aplicas cada cambio con un botón |
 | **Configuración** | Conexiones, parámetros de previsión y alertas, y contexto de la empresa para el asistente |
+
+**Guía de uso:** el botón «? Guía» de la cabecera abre un recorrido paso a paso por todas las funciones. Se muestra sola la primera vez.
 
 **Alertas automáticas:**
 - sin stock con demanda, y riesgo de rotura antes de que llegue una compra;

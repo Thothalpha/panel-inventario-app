@@ -18,6 +18,7 @@
   <div class="status">
     <span id="source" class="badge">…</span>
     <span id="updated" class="muted"></span>
+    <button id="tour-btn" class="btn ghost" title="Guía de uso de la app">? Guía</button>
     <button id="conn-chip" class="btn ghost conn-chip" hidden title="Conexión con Odoo y proveedor de IA"></button>
     <button id="refresh" class="btn ghost" title="Volver a leer Odoo">↻ Actualizar</button>
   </div>
@@ -97,41 +98,65 @@
 
   <!-- ALERTAS -->
   <section id="tab-alertas" class="tab">
-    <div class="filters">
+    <div class="filters" id="alert-filters">
       <div id="sev-chips" class="chips"></div>
+    </div>
+    <div class="filters">
+      <input id="a-search" type="search" placeholder="Buscar referencia o producto…">
       <select id="a-kind"><option value="">Todos los tipos</option></select>
+      <select id="a-categ"><option value="">Todas las categorías</option></select>
+      <select id="a-family"><option value="">Todas las familias</option></select>
       <label class="check"><input type="checkbox" id="a-acked"> Mostrar vistas</label>
       <button id="ack-all" class="btn ghost">Marcar visibles como vistas</button>
+      <span id="a-count" class="muted small"></span>
     </div>
     <div id="alert-list" class="alert-list"></div>
 
-    <div class="card">
-      <div class="card-head"><h2>Mis alertas personalizadas</h2></div>
+    <div class="card" id="auto-config-card">
+      <div class="card-head">
+        <h2>Alertas automáticas</h2>
+        <span class="small muted">Decide qué tipos quieres, con qué severidad y de qué productos no quieres avisos.</span>
+      </div>
+      <div id="auto-config" class="auto-config"></div>
+    </div>
+
+    <div class="card" id="global-excl-card">
+      <div class="card-head">
+        <h2>Productos sin alertas</h2>
+        <button class="btn ghost" id="global-excl-edit">Editar</button>
+      </div>
+      <p class="small muted">Productos, categorías o familias de referencia de los que no quieres ninguna alerta, ni automática ni personalizada.</p>
+      <div id="global-excl"></div>
+    </div>
+
+    <div class="card" id="rules-card">
+      <div class="card-head"><h2>Mis alertas personalizadas</h2><button class="btn" id="rule-new">+ Nueva alerta</button></div>
       <div class="ai-rule">
-        <label for="nl-rule" class="small muted">Descríbela y la IA la prepara:</label>
+        <label for="nl-rule" class="small muted">O pídeselo a la IA: crear, cambiar, silenciar o eliminar alertas.</label>
         <div class="row">
           <input id="nl-rule" type="text" placeholder="p. ej. Avísame si las cajas de Cronidol bajan de 5.000 unidades">
-          <button id="nl-rule-btn" class="btn primary">Crear con IA</button>
+          <button id="nl-rule-btn" class="btn primary">Pedir a la IA</button>
         </div>
         <div id="nl-rule-out"></div>
       </div>
-      <details class="manual">
-        <summary>Crear manualmente</summary>
-        <form id="rule-form" class="rule-form">
-          <input name="name" placeholder="Nombre de la alerta" required>
-          <select name="scope_type"><option value="all">Todos los productos</option><option value="category">Categorías</option><option value="products">Referencias</option></select>
-          <input name="scope_values" placeholder="Categorías o referencias, separadas por comas">
-          <select name="metric" id="rule-metric"></select>
-          <select name="op"><option>&lt;</option><option>&lt;=</option><option>&gt;</option><option>&gt;=</option><option>==</option></select>
-          <input name="threshold" type="number" step="any" placeholder="Umbral" required>
-          <select name="severity"><option value="critica">Crítica</option><option value="alta">Alta</option><option value="media" selected>Media</option><option value="baja">Baja</option></select>
-          <input name="description" placeholder="Acción recomendada (opcional)">
-          <button class="btn primary">Guardar</button>
-        </form>
-      </details>
       <div id="rules"></div>
     </div>
   </section>
+
+  <!-- Editor de alertas (regla personalizada o tipo automático) -->
+  <dialog id="alert-editor" aria-labelledby="ae-title">
+    <form id="ae-form" method="dialog" novalidate>
+      <div class="detail-head"><h2 id="ae-title"></h2><button type="button" class="btn ghost" id="ae-close" aria-label="Cerrar">✕</button></div>
+      <div id="ae-body" class="ae-body"></div>
+      <div class="ae-msg" id="ae-msg" role="status"></div>
+      <div class="setup-actions">
+        <button type="button" class="btn ghost danger" id="ae-delete" hidden>Eliminar</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" id="ae-cancel">Cancelar</button>
+        <button type="button" class="btn primary" id="ae-save">Guardar</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- ASISTENTE -->
   <section id="tab-asistente" class="tab">
