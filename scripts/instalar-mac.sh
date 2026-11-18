@@ -8,9 +8,12 @@
 # el navegador) no recibe la marca de cuarentena, así que macOS la abre sin bloquearla.
 #
 # Copyright (C) 2026 Thothalpha · Licencia AGPL-3.0
-set -euo pipefail
+# Sin "set -u": el bash 3.2 de macOS da falsos «unbound variable». Las variables se validan a mano.
+set -eo pipefail
 
 REPO="Thothalpha/panel-inventario-app"
+TAG=""
+TMP=""
 APP="Panel Inventario.app"
 DEST="/Applications"
 
@@ -19,7 +22,7 @@ if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
   exit 1
 fi
 
-TAG="${1:-}"
+if [ $# -gt 0 ]; then TAG="$1"; fi
 if [ -z "$TAG" ]; then
   TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
         | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
@@ -30,7 +33,7 @@ BASE="https://github.com/$REPO/releases/download/$TAG"
 ZIP="PanelInventario-$V-arm64.zip"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+trap '[ -n "$TMP" ] && rm -rf "$TMP"' EXIT
 
 echo "→ Descargando Panel Inventario $TAG…"
 curl -fL --progress-bar -o "$TMP/$ZIP" "$BASE/$ZIP"
