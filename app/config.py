@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "PanelInventario"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 GITHUB_REPO = "Thothalpha/panel-inventario-app"
 
 # Recursos (static/): dentro del paquete de PyInstaller viven en sys._MEIPASS

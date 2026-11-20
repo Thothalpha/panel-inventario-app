@@ -139,9 +139,24 @@ class OdooReadOnly:
             self._uid = uid
         return self._uid
 
+    @property
+    def lang(self):
+        """Idioma del usuario en Odoo: los nombres traducibles (productos, categorías…) se leen como los ve él."""
+        if getattr(self, "_lang", None) is None:
+            try:
+                u = self._models.execute_kw(self.db, self.uid, self.api_key, "res.users", "read",
+                                            [[self.uid]], {"fields": ["lang"]})
+                self._lang = (u and u[0].get("lang")) or ""
+            except Exception:
+                self._lang = ""
+        return self._lang
+
     def call(self, model, method, *args, **kwargs):
         if method not in READ_METHODS:
             raise ReadOnlyViolation(f"Método '{method}' bloqueado: este cliente es de solo lectura")
+        # Sin contexto, Odoo devuelve los nombres en inglés (en_US), que pueden no coincidir con los del usuario
+        if self.lang:
+            kwargs["context"] = {"lang": self.lang, **(kwargs.get("context") or {})}
         return self._models.execute_kw(self.db, self.uid, self.api_key, model, method, list(args), kwargs)
 
     # Atajos
