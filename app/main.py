@@ -21,7 +21,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import ai, alerts, analytics, config, credentials, data, holded, models_catalog
+from urllib.parse import unquote
+
+from . import (ai, alerts, analytics, changelog, config, credentials, data, files, holded, integrations,
+               models_catalog, skills)
 from .odoo_client import DB_HINT, fault_message, is_db_fault
 
 log = logging.getLogger(__name__)
@@ -390,3 +393,104 @@ def ai_summary():
 async def ai_chat(req: Request):
     body = await req.json()
     return await run_in_threadpool(_ai_call, ai.chat, body.get("messages") or [])
+
+
+# ----------------------------------------------------------------------------- novedades
+@app.get("/api/whats-new")
+def whats_new():
+    return changelog.pending()
+
+
+@app.post("/api/whats-new/seen")
+def whats_new_seen():
+    changelog.mark_seen()
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------------- documentos
+def _files_call(fn, *args):
+    try:
+        return fn(*args)
+    except files.FileError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/files")
+def files_list():
+    return {"files": files.list_files(), "downloads": str(files.downloads_dir())}
+
+
+@app.post("/api/files")
+async def files_upload(req: Request):
+    """Cuerpo = bytes del archivo; nombre en la cabecera X-Filename (codificado con encodeURIComponent)."""
+    name = unquote(req.headers.get("x-filename") or "")
+    size = int(req.headers.get("content-length") or 0)
+    if size > files.MAX_UPLOAD:
+        raise HTTPException(413, f"El archivo supera {files.MAX_UPLOAD // 1024 // 1024} MB")
+    content = await req.body()
+    item = await run_in_threadpool(_files_call, files.import_file, name, content)
+    return {k: item[k] for k in ("id", "name", "type", "size", "summary")}
+
+
+@app.delete("/api/files/{fid}")
+def files_delete(fid: str):
+    _files_call(files.delete, fid)
+    return {"ok": True}
+
+
+@app.post("/api/files/{fid}/save")
+def files_save(fid: str):
+    return {"path": _files_call(files.save_to_downloads, fid)}
+
+
+@app.post("/api/files/open")
+async def files_open(req: Request):
+    body = await req.json()
+    _files_call(files.open_file, str(body.get("path") or ""), bool(body.get("reveal")))
+    return {"ok": True}
+
+
+# ----------------------------------------------------------------------------- skills e integraciones
+@app.get("/api/skills")
+def skills_list():
+    return {"skills": skills.public_list(), "integrations": integrations.public_list()}
+
+
+@app.post("/api/skills")
+async def skills_install(req: Request):
+    name = unquote(req.headers.get("x-filename") or "skill.md")
+    if not name.lower().endswith((".md", ".txt")):
+        raise HTTPException(400, "La skill debe ser un archivo .md")
+    try:
+        return skills.install(name, await req.body())
+    except skills.SkillError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/skills/{name}")
+async def skills_toggle(name: str, req: Request):
+    body = await req.json()
+    try:
+        skills.set_enabled(name, bool(body.get("enabled")))
+    except skills.SkillError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/skills/{name}")
+def skills_delete(name: str):
+    try:
+        skills.remove(name)
+    except skills.SkillError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.put("/api/integrations/{iid}")
+async def integrations_toggle(iid: str, req: Request):
+    body = await req.json()
+    try:
+        integrations.set_enabled(iid, bool(body.get("enabled")))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}

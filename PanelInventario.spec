@@ -3,15 +3,15 @@
 import re
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 VERSION = re.search(r'APP_VERSION = "([^"]+)"', Path("app/config.py").read_text()).group(1)
 
 a = Analysis(
     ["panel_inventario.py"],
     pathex=["."],
-    datas=[("static", "static")],
-    hiddenimports=collect_submodules("uvicorn") + ["keyring.backends.macOS", "app.main", "app.desktop", "truststore", "certifi"],
+    datas=[("static", "static"), ("skills", "skills")] + collect_data_files("fpdf"),
+    hiddenimports=collect_submodules("uvicorn") + ["keyring.backends.macOS", "app.main", "app.desktop", "truststore", "certifi", "openpyxl", "pypdf", "fpdf"],
     excludes=["tkinter", "matplotlib", "numpy", "pandas", "PyQt5", "PyQt6", "PySide6", "gi"],
     noarchive=False,
 )

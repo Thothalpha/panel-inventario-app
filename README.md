@@ -18,7 +18,7 @@ el ERP, su clave y modelo de IA, sus datos, sus alertas, sus ajustes y su gasto 
 | **Asistente IA** | Chat que consulta las métricas del panel y Odoo (solo lectura). Muestra las consultas que ha hecho y el coste de cada respuesta. También gestiona las alertas: propone crearlas, modificarlas, eliminarlas o configurar las automáticas, y tú aplicas cada cambio con un botón |
 | **Configuración** | Conexiones, parámetros de previsión y alertas, y contexto de la empresa para el asistente |
 
-**Guía de uso:** el botón «? Guía» de la cabecera abre un recorrido paso a paso por todas las funciones. Se muestra sola la primera vez.
+**Novedades:** tras cada actualización, la primera vez que abres la app aparece una ventana con lo nuevo (solo una vez).
 
 **Alertas automáticas:**
 - sin stock con demanda, y riesgo de rotura antes de que llegue una compra;
@@ -80,6 +80,41 @@ prefieres revisarlo antes de ejecutarlo, está en [`scripts/instalar-mac.sh`](sc
 
 Holded permite unas 100 peticiones por minuto: la app las espacia y reintenta si recibe un 429, así que la primera
 carga de datos puede tardar algo más que en Odoo.
+
+## Documentos, skills e integraciones del asistente
+
+**Documentos.** En el Asistente puedes adjuntar Excel (.xlsx), CSV o PDF (clip 📎 o arrastrándolos). El asistente
+los lee y puede devolverte archivos:
+
+| Herramienta | Para qué |
+|---|---|
+| `exportar_productos_excel` | Excel de productos con cifras tomadas directamente del panel (stock, previsión, cobertura…, también por talla) |
+| `crear_excel` | Excel libre (resultados de consultas al ERP, de un documento adjunto…) |
+| `rellenar_excel` | Copia de un Excel adjunto con celdas rellenadas, conservando el formato de la plantilla |
+| `crear_pdf` | Informe PDF con apartados, texto, listas y tablas |
+| `leer_documento` | Lee un adjunto (Excel con coordenadas de celda, CSV o texto de PDF) |
+
+Los archivos viven en la carpeta de datos de cada sección (60 días) y «Guardar en Descargas» los copia a
+`~/Downloads`; desde ahí se pueden abrir o mostrar en el Finder.
+
+**Skills.** Guías de trabajo en Markdown que el asistente carga cuando la tarea lo pide. Las integradas están en
+`skills/` y llegan con cada versión; el usuario puede desactivarlas o añadir las suyas en Configuración. Formato:
+
+```markdown
+---
+name: pedido-decathlon            # minúsculas y guiones
+description: Cuándo usarla, en una frase
+secciones: holded                 # opcional: odoo, holded (por defecto, las dos)
+---
+Instrucciones paso a paso. {ERP} se sustituye por Odoo u Holded.
+```
+
+**Integraciones.** `app/integrations.py` es la base para conectar otras apps: cada integración registra sus
+herramientas y el usuario la activa en Configuración. Reglas: solo lectura por defecto, cualquier cambio en otra
+app como propuesta que el usuario aplica, y claves en el Llavero.
+
+**Novedades.** Tras cada actualización, la primera vez que se abre la app aparece una ventana con las novedades
+(`app/changelog.py`). Al publicar una versión, añade su entrada al principio de `NOVEDADES`.
 
 ## Privacidad y seguridad
 

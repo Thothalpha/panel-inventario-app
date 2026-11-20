@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "PanelInventario"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.5.0"
 GITHUB_REPO = "Thothalpha/panel-inventario-app"
 
 # Recursos (static/): dentro del paquete de PyInstaller viven en sys._MEIPASS
@@ -121,3 +121,29 @@ def env(name, default=None):
 DEMO_MODE = env("DEMO_MODE", "0") == "1"
 DEMO_CACHE_DIR = Path(env("DEMO_CACHE_DIR", str(Path.home() / ".cache" / "odoo-kpi")))
 CACHE_TTL_SECONDS = int(env("CACHE_TTL_SECONDS", "900"))
+
+
+# ----------------------------------------------------------------------------- estado global de la app
+# Común a todas las secciones: última versión cuyas novedades se mostraron, skills desactivadas, integraciones.
+APP_STATE_FILE = DATA_DIR / "app_state.json"
+
+
+def load_app_state() -> dict:
+    try:
+        return json.loads(APP_STATE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_app_state(**changes) -> dict:
+    st = load_app_state()
+    st.update(changes)
+    tmp = APP_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(APP_STATE_FILE)
+    return st
+
+
+def existing_install() -> bool:
+    """¿Había datos de una versión anterior? (para decidir si mostrar las novedades)."""
+    return any((DATA_DIR / sec / f).exists() for sec in SECTIONS for f in ("settings.json", "connection.json", "dashboard.db"))

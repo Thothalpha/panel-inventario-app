@@ -809,14 +809,20 @@ const SUGGESTIONS = [
 ];
 $("#suggestions").innerHTML = SUGGESTIONS.map(s => `<button class="chip">${esc(s)}</button>`).join("");
 $$("#suggestions .chip").forEach(c => c.addEventListener("click", () => sendChat(c.textContent)));
-$("#chat-form").addEventListener("submit", e => { e.preventDefault(); const t = $("#chat-input").value.trim(); if (t) sendChat(t); });
+$("#chat-form").addEventListener("submit", e => {
+  e.preventDefault();
+  const t = $("#chat-input").value.trim();
+  if (t || docs.pending.length) sendChat(t || "Revisa el documento adjunto y dime qué contiene.");
+});
 $("#chat-input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat-form").requestSubmit(); } });
 
 async function sendChat(text) {
   const log = $("#chat-log");
   $("#chat-input").value = "";
-  state.chat.push({ role: "user", content: text });
-  log.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(text)}</div>`);
+  const att = docs.pending.splice(0).map(f => ({ id: f.id, name: f.name, type: f.type }));
+  renderAttachments();
+  state.chat.push({ role: "user", content: text, files: att });
+  log.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(text)}${att.length ? `<div class="msg-files">${att.map(f => `${FILE_ICON[f.type] || "📎"} ${esc(f.name)}`).join(" · ")}</div>` : ""}</div>`);
   const pending = document.createElement("div");
   pending.className = "msg assistant";
   pending.innerHTML = `<span class="spinner"></span>Pensando y consultando datos…`;
@@ -825,16 +831,20 @@ async function sendChat(text) {
   $("#chat-send").disabled = true;
   try {
     const r = await api("/api/ai/chat", { method: "POST", body: JSON.stringify({ messages: state.chat }) });
-    state.chat.push({ role: "assistant", content: r.text });
+    state.chat.push({ role: "assistant", content: r.text, files: r.files || [] });
     pending.classList.add("md");
     const q = r.queries.length ? `<details><summary>${r.queries.length} consultas realizadas</summary>${r.queries.map(x => `<div><code>${esc(x.tool)} ${esc(JSON.stringify(x.input))}</code></div>`).join("")}</details>` : "";
     const u = r.usage;
     const cost = u ? `<div class="usage">${esc(r.model || "")} · ${new Intl.NumberFormat("es-ES").format(u.prompt_tokens + u.completion_tokens)} tokens` +
       (u.cost !== null && u.cost !== undefined ? ` · ${esc(usd(u.cost))}` : "") + `</div>` : "";
-    pending.innerHTML = md(r.text) + r.proposals.map(proposalHtml).join("") + q + cost;
+    pending.innerHTML = md(r.text) + (r.files || []).map(fileCard).join("") + r.proposals.map(proposalHtml).join("") + q + cost;
     bindProposals(pending, r.proposals);
+    bindFileCards(pending);
+    if ((r.files || []).length) loadDocs();
   } catch (e) {
-    state.chat.pop();
+    const lost = state.chat.pop();
+    docs.pending = [...(lost?.files || []), ...docs.pending];   // los adjuntos vuelven para reintentar
+    renderAttachments();
     pending.innerHTML = `<div class="warn">${esc(e.message)}</div>`;
   } finally {
     $("#chat-send").disabled = false;
@@ -1135,7 +1145,7 @@ $("#setup-next").addEventListener("click", async () => {
     $("#setup").close();
     await refreshConnection();
     await load(true);
-    maybeTour();
+    maybeWhatsNew();
   } catch (e) {
     setMsg($("#test-ai-msg"), "err", esc(e.message));
   } finally { btn.disabled = false; }
@@ -1195,143 +1205,174 @@ async function checkVersion() {
   } catch {}
 }
 
-/* ---------------------------------------------------------------- guía de uso (recorrido) */
-const TOUR = [
-  { title: "Bienvenido a Panel Inventario",
-    text: "En un par de minutos te enseño todo lo que puedes hacer: ver el estado del inventario, saber qué pedir, decidir qué alertas quieres y preguntar a la IA. Usa «Siguiente» o las flechas del teclado; puedes salir cuando quieras." },
-  { target: "#section-switch", title: "Dos secciones: Odoo y Holded",
-    text: "Cada sección es independiente: su propia conexión, sus datos, sus alertas, su asistente y su gasto de IA. Cambia de una a otra con estos botones." },
-  { tab: "resumen", target: "#kpis", title: "Los indicadores clave",
-    text: "Valor del stock, rotación, alertas urgentes, cuánto hay que pedir, exceso, stock parado y compras en curso. Se calculan con tus datos de {ERP} cada vez que abres la app o pulsas «Actualizar»." },
-  { tab: "resumen", target: ".ai-card", title: "Resumen con IA",
-    text: "Pulsa «Generar resumen» y el asistente revisa todo el inventario y te dice en una página qué pedir, qué riesgos hay y dónde hay dinero parado. Ideal para empezar la semana." },
-  { tab: "resumen", target: () => $("#ch-coverage")?.closest(".card"), title: "Gráficos",
-    text: "Cuántos productos están en riesgo de rotura, qué tipos de alerta tienes, el valor por categoría y la matriz ABC/XYZ (importancia y regularidad de cada producto). Pasa el ratón por encima para ver las cifras." },
-  { tab: "productos", target: () => $("#f-text")?.closest(".filters"), title: "Buscar y filtrar productos",
-    text: "Busca por referencia o nombre y filtra por categoría, clase ABC o situación: en riesgo, con pedido sugerido, en exceso o sin movimiento. Pulsa los títulos de las columnas para ordenar." },
-  { tab: "productos", target: "#products", title: "El detalle de cada producto",
-    text: "Pulsa una fila para ver su demanda semanal y la previsión, cuándo se quedaría sin stock, la cantidad sugerida a pedir, el stock por lote y ubicación y en qué productos se usa. Desde ahí también puedes preguntar a la IA por ese producto." },
-  { tab: "alertas", target: "#alert-filters", title: "Tus alertas, por urgencia",
-    text: "Filtra por severidad: crítica, alta, media o baja. El número rojo de la pestaña son las críticas y altas que aún no has visto." },
-  { tab: "alertas", target: () => $("#a-search")?.closest(".filters"), title: "Filtra por tipo, categoría o familia",
-    text: "Encuentra rápido las alertas de una categoría, de una colección o de una familia de referencia. «Marcar visibles como vistas» las archiva todas de golpe; vuelven a salir pasados unos días si el problema sigue." },
-  { tab: "alertas", target: () => $("#alert-list .alert") || $("#alert-list"), title: "Cada alerta",
-    text: "Te dice qué pasa, qué hacer y su impacto. En «Opciones» puedes dejar de recibir avisos de ese producto (solo de ese tipo o de ninguno) o configurar ese tipo de alerta." },
-  { tab: "alertas", target: "#auto-config-card", title: "Tú decides qué alertas quieres",
-    text: "Activa o desactiva cada tipo de alerta automática, cámbiale la severidad y pulsa «Editar» para ajustar sus umbrales o excluir productos, categorías o familias." },
-  { tab: "alertas", target: "#global-excl-card", title: "Productos sin alertas",
-    text: "Lo que añadas aquí no generará ninguna alerta. Útil para productos descatalogados, muestras o material que no gestionas tú." },
-  { tab: "alertas", target: "#rules-card", title: "Tus propias alertas",
-    text: "Crea alertas a tu medida con «+ Nueva alerta» (por ejemplo, «avísame si las cajas de Cronidol bajan de 5.000»), o escríbelo y pulsa «Pedir a la IA». Puedes editarlas, pausarlas o eliminarlas cuando quieras." },
-  { tab: "asistente", target: "#chat-form", title: "Pregunta lo que quieras",
-    text: "El asistente consulta el panel y {ERP} (solo lectura) para responder: qué pedir esta semana, cómo va un producto, qué compras están retrasadas… También puede crear, cambiar o eliminar alertas por ti: siempre te enseña el cambio y tú lo aplicas con un botón." },
-  { tab: "asistente", target: "#suggestions", title: "Ideas para empezar",
-    text: "Pulsa cualquiera de estas preguntas de ejemplo. Debajo de cada respuesta verás qué consultas ha hecho y cuánto ha costado." },
-  { tab: "config", target: "#settings-form", title: "Ajusta la app a tu forma de trabajar",
-    text: "Plazo de entrega por defecto, nivel de servicio, umbrales de alertas… Y en «Contexto de la empresa» cuéntale al asistente cómo trabajáis: sus respuestas mejorarán mucho." },
-  { target: "#conn-chip", title: "Tu conexión",
-    text: "Aquí cambias la conexión con {ERP} o el modelo de IA de esta sección. En Configuración → Conexiones verás también cuánto llevas gastado en IA este mes." },
-  { target: "#refresh", title: "Datos al día",
-    text: "La app vuelve a leer {ERP} cada 15 minutos; pulsa «Actualizar» si acabas de hacer cambios en {ERP} y quieres verlos ya." },
-  { target: "#tour-btn", title: "¡Listo!",
-    text: "Puedes volver a ver esta guía cuando quieras desde este botón. Cuando haya una versión nueva de la app, te avisará arriba con las instrucciones para actualizar." },
-];
-const tour = { i: 0, on: false };
+/* ---------------------------------------------------------------- novedades tras actualizar */
+async function maybeWhatsNew() {
+  if (STATIC || $$("dialog[open]").length) return;
+  let r;
+  try { r = await api("/api/whats-new"); } catch { return; }
+  if (!r.show || !r.versions.length) return;
+  $("#wn-title").textContent = `Novedades de la versión ${r.current}`;
+  $("#wn-body").innerHTML = r.versions.map(v => `
+    <section class="wn-ver">
+      ${r.versions.length > 1 ? `<h3>v${esc(v.version)} · ${esc(v.titulo)}</h3>` : `<h3>${esc(v.titulo)}</h3>`}
+      <ul>${v.puntos.map(p => `<li>${esc(p)}</li>`).join("")}</ul>
+    </section>`).join("");
+  $("#whats-new").showModal();
+  try { await api("/api/whats-new/seen", { method: "POST" }); } catch {}   // solo se muestra una vez
+}
+["#wn-close", "#wn-ok"].forEach(s => $(s).addEventListener("click", () => $("#whats-new").close()));
 
-function tourEls() {
-  if (!$("#tour-pop")) {
-    document.body.insertAdjacentHTML("beforeend", `
-      <div id="tour-block" class="tour-block" hidden></div>
-      <div id="tour-spot" class="tour-spot" hidden></div>
-      <div id="tour-pop" class="tour-pop" role="dialog" aria-modal="true" aria-labelledby="tour-title" hidden>
-        <div class="tour-step" id="tour-step"></div>
-        <h3 id="tour-title"></h3>
-        <p id="tour-text"></p>
-        <div class="tour-actions">
-          <button class="btn ghost" id="tour-skip">Saltar guía</button>
-          <span class="spacer"></span>
-          <button class="btn ghost" id="tour-prev">← Anterior</button>
-          <button class="btn primary" id="tour-next">Siguiente →</button>
-        </div>
-      </div>`);
-    $("#tour-skip").addEventListener("click", () => endTour());
-    $("#tour-prev").addEventListener("click", () => tourGo(tour.i - 1));
-    $("#tour-next").addEventListener("click", () => tour.i >= TOUR.length - 1 ? endTour() : tourGo(tour.i + 1));
-    $("#tour-block").addEventListener("click", () => {});
+/* ---------------------------------------------------------------- documentos */
+const FILE_ICON = { excel: "📊", csv: "📄", pdf: "📕" };
+const docs = { pending: [], saved: {} };
+const fmtSize = b => b >= 1048576 ? fmt(b / 1048576, 1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+
+async function uploadDoc(file) {
+  const r = await fetch("/api/files", { method: "POST", body: file, headers: {
+    "Content-Type": "application/octet-stream", "X-Section": SECTION, "X-Filename": encodeURIComponent(file.name),
+    ...(APP_TOKEN ? { "X-App-Token": APP_TOKEN } : {}) } });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r.json();
+}
+
+function renderAttachments() {
+  const box = $("#chat-attach");
+  box.hidden = !docs.pending.length;
+  box.innerHTML = docs.pending.map((f, i) => `<span class="attach-chip">${FILE_ICON[f.type] || "📎"} ${esc(f.name)}
+    <button type="button" class="link" data-i="${i}" aria-label="Quitar ${esc(f.name)}">✕</button></span>`).join("");
+  $$("#chat-attach button").forEach(b => b.addEventListener("click", () => { docs.pending.splice(+b.dataset.i, 1); renderAttachments(); }));
+}
+
+async function attachFiles(list) {
+  for (const file of list) {
+    const tmp = { name: file.name, type: "", uploading: true };
+    const box = $("#chat-attach");
+    box.hidden = false;
+    box.insertAdjacentHTML("beforeend", `<span class="attach-chip" data-up><span class="spinner"></span>${esc(file.name)}</span>`);
+    try {
+      const f = await uploadDoc(file);
+      docs.pending.push(f);
+    } catch (e) {
+      alertMsg(`No se ha podido subir «${file.name}»: ${e.message}`);
+    }
   }
+  renderAttachments();
+  loadDocs();
 }
-function startTour() {
-  tourEls();
-  $$("dialog[open]").forEach(d => d.close());
-  tour.on = true;
-  ["#tour-block", "#tour-pop"].forEach(s => $(s).hidden = false);
-  tourGo(0);
+function alertMsg(text) {
+  $("#chat-log").insertAdjacentHTML("beforeend", `<div class="msg assistant"><div class="warn">${esc(text)}</div></div>`);
 }
-function endTour() {
-  tour.on = false;
-  ["#tour-block", "#tour-spot", "#tour-pop"].forEach(s => $(s).hidden = true);
-  LS.set("tour-done", true);
+$("#attach-btn").addEventListener("click", () => $("#attach-input").click());
+$("#attach-input").addEventListener("change", e => { attachFiles([...e.target.files]); e.target.value = ""; });
+$("#docs-upload").addEventListener("click", () => $("#attach-input").click());
+// Arrastrar y soltar sobre el chat
+const chatCard = $("#tab-asistente .card.chat");
+["dragenter", "dragover"].forEach(ev => chatCard.addEventListener(ev, e => { e.preventDefault(); chatCard.classList.add("drop"); }));
+["dragleave", "drop"].forEach(ev => chatCard.addEventListener(ev, e => { e.preventDefault(); chatCard.classList.remove("drop"); }));
+chatCard.addEventListener("drop", e => { if (e.dataTransfer?.files?.length) attachFiles([...e.dataTransfer.files]); });
+
+function fileCard(f) {
+  const saved = docs.saved[f.id];
+  const actions = saved
+    ? `<span class="ok small" title="${esc(saved)}">Guardado en Descargas</span>
+       <button class="btn ghost" data-act="open">Abrir</button><button class="btn ghost" data-act="reveal">Mostrar en Finder</button>`
+    : `<button class="btn primary" data-act="save">Guardar en Descargas</button>`;
+  return `<div class="file-card" data-id="${esc(f.id)}" data-name="${esc(f.name)}" data-type="${esc(f.type || "")}" data-size="${+f.size || 0}">
+    <span class="file-ico">${FILE_ICON[f.type] || "📎"}</span>
+    <span class="file-name">${esc(f.name)}<small>${esc(f.type === "excel" ? "Excel" : (f.type || "").toUpperCase())}${f.size ? " · " + fmtSize(f.size) : ""}</small></span>
+    <span class="file-actions">${actions}</span></div>`;
 }
-function tourTarget(step) {
-  if (!step.target) return null;
-  const el = typeof step.target === "function" ? step.target() : $(step.target);
-  return el && !el.hidden && el.offsetParent !== null ? el : null;
+function bindFileCards(root) {
+  root.querySelectorAll(".file-card:not([data-bound])").forEach(card => {
+    card.dataset.bound = "1";
+    const f = { id: card.dataset.id, name: card.dataset.name, type: card.dataset.type, size: +card.dataset.size };
+    card.querySelectorAll("button[data-act]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        if (b.dataset.act === "save") {
+          docs.saved[f.id] = (await api(`/api/files/${f.id}/save`, { method: "POST" })).path;
+          // Actualiza todas las tarjetas de ese archivo (chat y Documentos)
+          $$(`.file-card[data-id="${f.id}"]`).forEach(c => {
+            const parent = c.parentElement;
+            c.outerHTML = fileCard(f);
+            bindFileCards(parent);
+          });
+          return;
+        }
+        await api("/api/files/open", { method: "POST", body: JSON.stringify({ path: docs.saved[f.id], reveal: b.dataset.act === "reveal" }) });
+      } catch (e) { b.textContent = e.message.slice(0, 60); }
+      finally { b.disabled = false; }
+    }));
+  });
 }
-function tourGo(i) {
-  tour.i = Math.max(0, Math.min(TOUR.length - 1, i));
-  const step = TOUR[tour.i];
-  if (step.tab) showTab(step.tab);
-  $("#tour-step").textContent = `Paso ${tour.i + 1} de ${TOUR.length}`;
-  $("#tour-title").textContent = step.title;
-  $("#tour-text").textContent = step.text.replaceAll("{ERP}", ERP());
-  $("#tour-prev").disabled = tour.i === 0;
-  $("#tour-next").textContent = tour.i === TOUR.length - 1 ? "Terminar" : "Siguiente →";
-  const el = tourTarget(step);
-  if (el) {
-    // Elementos altos: arriba del todo (bajo la cabecera) para que quepa la explicación debajo
-    const tall = el.getBoundingClientRect().height > window.innerHeight * 0.4;
-    el.scrollIntoView({ block: tall ? "start" : "center", behavior: "instant" });
-    if (tall) window.scrollBy(0, -20);
-  }
-  requestAnimationFrame(() => tourPlace(el));
-  $("#tour-next").focus();
+
+async function loadDocs() {
+  if (STATIC) { $("#docs-card").hidden = true; return; }
+  let r;
+  try { r = await api("/api/files"); } catch { return; }
+  const list = r.files;
+  $("#docs-list").innerHTML = list.length ? list.map(f => `<div class="doc-row">
+      ${fileCard(f)}
+      <span class="doc-meta small muted">${f.kind === "generado" ? "Generado" : "Subido"} · ${esc(new Date(f.created).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }))}</span>
+      ${f.kind === "importado" ? `<button class="btn ghost" data-attach="${esc(f.id)}" title="Adjuntarlo a tu próxima pregunta">Usar en el chat</button>` : ""}
+      <button class="btn ghost" data-del="${esc(f.id)}" aria-label="Eliminar ${esc(f.name)}">🗑</button></div>`).join("")
+    : `<p class="muted small">Aún no hay documentos.</p>`;
+  bindFileCards($("#docs-list"));
+  $$("#docs-list [data-del]").forEach(b => b.addEventListener("click", async () => {
+    try { await api(`/api/files/${b.dataset.del}`, { method: "DELETE" }); } catch (e) { b.textContent = e.message; return; }
+    docs.pending = docs.pending.filter(f => f.id !== b.dataset.del);
+    renderAttachments(); loadDocs();
+  }));
+  $$("#docs-list [data-attach]").forEach(b => b.addEventListener("click", () => {
+    const f = list.find(x => x.id === b.dataset.attach);
+    if (f && !docs.pending.some(x => x.id === f.id)) docs.pending.push(f);
+    renderAttachments(); $("#chat-input").focus();
+  }));
 }
-function tourPlace(el) {
-  const spot = $("#tour-spot"), pop = $("#tour-pop");
-  const vw = window.innerWidth, vh = window.innerHeight, pad = 8, gap = 14;
-  $("#tour-block").classList.toggle("dim", !el);
-  if (!el) {
-    spot.hidden = true;
-    pop.style.left = Math.max(16, (vw - pop.offsetWidth) / 2) + "px";
-    pop.style.top = Math.max(16, (vh - pop.offsetHeight) / 2) + "px";
+
+/* ---------------------------------------------------------------- skills e integraciones */
+async function loadSkills() {
+  if (STATIC) { $("#skills-card").hidden = true; return; }
+  let r;
+  try { r = await api("/api/skills"); } catch { return; }
+  const secName = s => s.map(x => SECTIONS[x] || x).join(" y ");
+  $("#skills-list").innerHTML = r.skills.length ? r.skills.map(s => `<div class="skill-row">
+      <label class="switch"><input type="checkbox" data-skill="${esc(s.name)}" ${s.enabled ? "checked" : ""}> <b>${esc(s.name)}</b></label>
+      <span class="small">${esc(s.description)}</span>
+      <span class="small muted">${s.origin === "integrada" ? "Integrada" : "Añadida por ti"} · ${esc(secName(s.sections))}</span>
+      ${s.origin === "añadida" ? `<button class="btn ghost" data-skill-del="${esc(s.name)}" aria-label="Eliminar ${esc(s.name)}">🗑</button>` : "<span></span>"}
+    </div>`).join("") : `<p class="muted small">No hay skills.</p>`;
+  $("#integrations-list").innerHTML = r.integrations.length ? r.integrations.map(i => `<div class="skill-row">
+      <label class="switch"><input type="checkbox" data-integ="${esc(i.id)}" ${i.enabled ? "checked" : ""}> <b>${esc(i.name)}</b></label>
+      <span class="small">${esc(i.description)}</span><span class="small muted">${esc(secName(i.sections))}</span><span></span></div>`).join("")
+    : `<p class="muted small">Todavía no hay integraciones disponibles: se irán añadiendo en próximas versiones.</p>`;
+  $$("#skills-list [data-skill]").forEach(c => c.addEventListener("change", async () => {
+    try { await api(`/api/skills/${c.dataset.skill}`, { method: "PUT", body: JSON.stringify({ enabled: c.checked }) }); }
+    catch (e) { c.checked = !c.checked; }
+  }));
+  $$("#skills-list [data-skill-del]").forEach(b => b.addEventListener("click", async () => {
+    try { await api(`/api/skills/${b.dataset.skillDel}`, { method: "DELETE" }); loadSkills(); } catch (e) { b.textContent = e.message; }
+  }));
+  $$("#integrations-list [data-integ]").forEach(c => c.addEventListener("change", async () => {
+    try { await api(`/api/integrations/${c.dataset.integ}`, { method: "PUT", body: JSON.stringify({ enabled: c.checked }) }); }
+    catch (e) { c.checked = !c.checked; }
+  }));
+}
+$("#skill-add").addEventListener("click", () => $("#skill-input").click());
+$("#skill-input").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const r = await fetch("/api/skills", { method: "POST", body: file, headers: {
+    "Content-Type": "text/markdown", "X-Section": SECTION, "X-Filename": encodeURIComponent(file.name),
+    ...(APP_TOKEN ? { "X-App-Token": APP_TOKEN } : {}) } });
+  if (!r.ok) {
+    let m = r.statusText; try { m = (await r.json()).detail || m; } catch {}
+    $("#skills-list").insertAdjacentHTML("afterbegin", `<div class="warn">No se ha podido añadir la skill: ${esc(m)}</div>`);
     return;
   }
-  const r = el.getBoundingClientRect();
-  const pw = pop.offsetWidth, ph = pop.offsetHeight;
-  const top = Math.max(4, r.top - pad), left = Math.max(4, r.left - pad);
-  // Elementos más altos que el hueco disponible: se resalta su parte superior y la explicación va debajo
-  const room = vh - top - ph - gap - 16;
-  const height = Math.min(r.height + pad * 2, vh - top - 4, Math.max(120, room));
-  const width = Math.min(r.width + pad * 2, vw - left - 4);
-  Object.assign(spot.style, { top: top + "px", left: left + "px", width: width + "px", height: height + "px" });
-  spot.hidden = false;
-  let pt, pl = Math.min(Math.max(16, left), vw - pw - 16);
-  if (vh - (top + height) >= ph + gap + 16) pt = top + height + gap;   // debajo
-  else if (top >= ph + gap + 16) pt = top - ph - gap;                  // encima
-  else { pt = vh - ph - 16; pl = vw - pw - 16; }                        // no cabe: esquina inferior derecha
-  pop.style.top = pt + "px"; pop.style.left = pl + "px";
-}
-window.addEventListener("resize", () => { if (tour.on) tourPlace(tourTarget(TOUR[tour.i])); });
-document.addEventListener("keydown", e => {
-  if (!tour.on) return;
-  if (e.key === "Escape") { e.preventDefault(); endTour(); }
-  else if (e.key === "ArrowRight") { e.preventDefault(); $("#tour-next").click(); }
-  else if (e.key === "ArrowLeft" && tour.i > 0) { e.preventDefault(); tourGo(tour.i - 1); }
+  loadSkills();
 });
-$("#tour-btn").addEventListener("click", startTour);
-function maybeTour() {
-  if (!LS.get("tour-done", false) && !$$("dialog[open]").length) setTimeout(startTour, 400);
-}
 
 /* ---- arranque */
 async function start() {
@@ -1343,8 +1384,8 @@ async function start() {
   }
   applySectionUI();
   await refreshConnection();
-  loadRules(); loadSettings(); loadAlertConfig(); checkVersion();
-  if (setup.status?.configured) { await load(); maybeTour(); }
+  loadRules(); loadSettings(); loadAlertConfig(); checkVersion(); loadDocs(); loadSkills();
+  if (setup.status?.configured) { await load(); maybeWhatsNew(); }
   else {
     $("#warnings").innerHTML = `<div class="warn">Configura la conexión con ${esc(ERP())} y el proveedor de IA de esta sección para empezar.</div>`;
     openSetup();
@@ -1365,12 +1406,13 @@ async function switchSection(sec) {
   try { localStorage.setItem("inv-section", sec); } catch {}
   // Todo lo que se ve es de la sección anterior: se vacía antes de cargar la nueva
   state.data = null; state.rules = null; state.acfg = null; state.chat = []; setup.status = null;
+  docs.pending = []; renderAttachments();
   $$("dialog[open]").forEach(d => d.close());
   $("#warnings").innerHTML = "";
   $("#summary").classList.add("muted");
   $("#summary").textContent = "Pulsa «Generar resumen» para que la IA revise el inventario de esta sección.";
   $("#summary-meta").textContent = "";
-  $("#chat-log").innerHTML = `<div class="msg assistant md"><p>Hola. Pregúntame lo que quieras del inventario de ${esc(ERP())}: consulto el panel y, si hace falta, lanzo la consulta directamente a ${esc(ERP())} (solo lectura). También puedo gestionar tus alertas.</p></div>`;
+  $("#chat-log").innerHTML = `<div class="msg assistant md"><p>Hola. Pregúntame lo que quieras del inventario de ${esc(ERP())}: consulto el panel y, si hace falta, lanzo la consulta directamente a ${esc(ERP())} (solo lectura). También puedo gestionar tus alertas y prepararte Excel o PDF, o trabajar con los que me adjuntes.</p></div>`;
   $("#nl-rule-out").innerHTML = "";
   ["#kpis", "#alert-list", "#products", "#top-demand", "#auto-config", "#rules", "#global-excl"].forEach(sel => { const el = $(sel); if (el) el.innerHTML = ""; });
   $("#alert-count").textContent = "";

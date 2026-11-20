@@ -22,7 +22,6 @@
   <div class="status">
     <span id="source" class="badge">…</span>
     <span id="updated" class="muted"></span>
-    <button id="tour-btn" class="btn ghost" title="Guía de uso de la app">? Guía</button>
     <button id="conn-chip" class="btn ghost conn-chip" hidden title="Conexión con Odoo y proveedor de IA"></button>
     <button id="refresh" class="btn ghost" title="Volver a leer Odoo">↻ Actualizar</button>
   </div>
@@ -170,14 +169,23 @@
     <div class="card chat">
       <div id="chat-log" class="chat-log">
         <div class="msg assistant md">
-          <p>Hola. Pregúntame lo que quieras del inventario: consulto el panel y, si hace falta, lanzo la consulta directamente a <span class="erp">Odoo</span> (solo lectura). También puedo prepararte alertas.</p>
+          <p>Hola. Pregúntame lo que quieras del inventario: consulto el panel y, si hace falta, lanzo la consulta directamente a <span class="erp">Odoo</span> (solo lectura). También puedo gestionar tus alertas y prepararte Excel o PDF, o trabajar con los que me adjuntes.</p>
         </div>
       </div>
       <div class="suggestions" id="suggestions"></div>
+      <div id="chat-attach" class="attach-list" hidden></div>
       <form id="chat-form" class="chat-form">
-        <textarea id="chat-input" rows="2" placeholder="Escribe tu pregunta…"></textarea>
+        <button type="button" class="btn ghost attach-btn" id="attach-btn" title="Adjuntar Excel, CSV o PDF" aria-label="Adjuntar documento">📎</button>
+        <input type="file" id="attach-input" accept=".xlsx,.xlsm,.csv,.pdf" multiple hidden>
+        <textarea id="chat-input" rows="2" placeholder="Escribe tu pregunta… (puedes adjuntar Excel o PDF con 📎 o arrastrándolos aquí)"></textarea>
         <button class="btn primary" id="chat-send">Enviar</button>
       </form>
+    </div>
+    <div class="card" id="docs-card">
+      <div class="card-head"><h2>Documentos</h2>
+        <button class="btn" id="docs-upload" type="button">Subir documento</button></div>
+      <p class="muted small">Lo que adjuntas al asistente y lo que te genera (Excel, PDF). «Guardar» lo copia a tu carpeta Descargas. Se conservan 60 días.</p>
+      <div id="docs-list" class="docs-list"></div>
     </div>
   </section>
 
@@ -186,6 +194,15 @@
     <div class="card" id="conn-card" hidden>
       <div class="card-head"><h2>Conexiones</h2><button class="btn" id="conn-edit">Cambiar conexión</button></div>
       <div class="conn-grid" id="conn-summary"></div>
+    </div>
+    <div class="card" id="skills-card">
+      <div class="card-head"><h2>Skills del asistente</h2>
+        <button class="btn" id="skill-add" type="button">Añadir skill (.md)</button>
+        <input type="file" id="skill-input" accept=".md,.txt" hidden></div>
+      <p class="muted small">Guías de trabajo que el asistente carga cuando la tarea lo pide (Excel de stock, rellenar plantillas, informes PDF…). Las integradas llegan con las actualizaciones; puedes desactivarlas o añadir otras.</p>
+      <div id="skills-list" class="skills-list"></div>
+      <h3 class="small-h">Integraciones con otras apps</h3>
+      <div id="integrations-list" class="skills-list"></div>
     </div>
     <div class="card">
       <h2>Parámetros de previsión y alertas</h2>
@@ -309,6 +326,12 @@
 </dialog>
 
 <!-- Detalle de producto -->
+<dialog id="whats-new" aria-labelledby="wn-title">
+  <div class="detail-head"><h2 id="wn-title">Novedades</h2><button class="btn ghost" id="wn-close" aria-label="Cerrar">✕</button></div>
+  <div id="wn-body" class="wn-body"></div>
+  <div class="wn-foot"><button class="btn primary" id="wn-ok">Entendido</button></div>
+</dialog>
+
 <dialog id="detail">
   <div class="detail-head">
     <div><h2 id="d-title"></h2><span id="d-sub" class="muted"></span></div>

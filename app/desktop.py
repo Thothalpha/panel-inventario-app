@@ -110,6 +110,13 @@ def main():
         info = json.loads(urllib.request.urlopen(req, timeout=10).read())
         html = urllib.request.urlopen(base + "/", timeout=10).read().decode("utf-8")
         assert "setup-form" in html, "index.html incompleto"
+        # Documentos y skills dentro del paquete: openpyxl, pypdf y fpdf2 empaquetados, skills integradas presentes
+        from app import files, skills
+        assert skills.all_skills(), "no se han empaquetado las skills"
+        x = files.create_excel("selftest", [{"columnas": ["Ref", "Stock"], "filas": [["A-1", 3]]}], origin="selftest")
+        pdf = files.create_pdf("selftest", "Selftest", [{"tipo": "tabla", "columnas": ["Ref", "€"], "filas": [["A-1", 1]]}])
+        assert files.read(x["id"])["filas"] and files.read(pdf["id"])["paginas"], "documentos ilegibles"
+        files.delete(x["id"]); files.delete(pdf["id"])
         # HTTPS real con la configuración de certificados de la app (Odoo, OpenRouter y GitHub lo usan)
         import ssl
         import xmlrpc.client

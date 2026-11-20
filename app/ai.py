@@ -20,11 +20,11 @@ import anthropic
 import openai
 
 from . import alerts as alerts_mod
-from . import analytics, config, credentials, data, holded
+from . import analytics, config, credentials, data, files, holded, integrations, skills
 
 log = logging.getLogger(__name__)
 MAX_TOOL_CHARS = 30000
-MAX_TURNS = 14
+MAX_TURNS = 20
 APP_REFERER = "https://github.com/" + config.GITHUB_REPO
 
 ODOO_MODELS = {
@@ -48,6 +48,10 @@ Cómo trabajas:
   · Todo queda como PROPUESTA: el usuario la aplica con un botón. Nunca digas que ya está hecho; di qué cambiará al aplicarla.
 - Distingue hechos de estimaciones: la previsión es estadística (Holt amortiguado / Croston-SBA, con su precisión de backtest); avisa si la precisión es baja (< 0,5) o la historia corta.
 - La demanda incluye ventas y consumo en fabricación. Cobertura = stock a mano / demanda diaria prevista. Plazo de entrega = el del proveedor en el ERP o el valor por defecto.{ERP_NOTES}
+- Documentos: el usuario puede adjuntar Excel, CSV o PDF (verás «Documentos adjuntos» con su id): léelos con leer_documento.
+  Puedes entregar archivos descargables: Excel de productos con cifras del panel → exportar_productos_excel (preferible: no
+  transcribas cifras a mano); Excel libre → crear_excel; rellenar un Excel adjunto conservando su formato → rellenar_excel;
+  informe → crear_pdf. Cuando generes un archivo, la app muestra el botón para guardarlo: no escribas enlaces ni rutas.
 - Si el panel está en MODO DEMO, menciónalo una vez: los datos no son en vivo."""
 
 
@@ -69,7 +73,7 @@ def system_prompt() -> str:
     base = (SYSTEM_BASE.replace("{ERP_TOOLS}", tools).replace("{ERP_NOTES}", ERP_NOTES[sec])
             .replace("{ERP}", config.erp_name()))
     ctx = (config.load_settings().get("contexto_empresa") or "").strip()
-    return base + (f"\n\nContexto de la empresa:\n{ctx}" if ctx else "")
+    return base + skills.prompt_section() + (f"\n\nContexto de la empresa:\n{ctx}" if ctx else "")
 
 
 TOOLS = [
@@ -168,11 +172,73 @@ HOLDED_TOOL = {
         "required": ["path"], "additionalProperties": False}}
 ODOO_ONLY = {"consulta_odoo", "agregado_odoo"}
 
+_CELL = {"type": ["string", "number", "boolean", "null"]}
+DOC_TOOLS = [
+    {"name": "leer_documento",
+     "description": "Lee un documento adjunto por su id. Excel: filas con sus celdas por letra de columna (A, B…), para poder "
+                    "rellenarlo; indica hoja y desde_fila para paginar. CSV: filas. PDF: texto por página (desde_fila = página).",
+     "input_schema": {"type": "object", "properties": {
+         "documento_id": {"type": "string"}, "hoja": {"type": "string"},
+         "desde_fila": {"type": "integer", "minimum": 1}, "filas": {"type": "integer", "minimum": 1, "maximum": 400}},
+         "required": ["documento_id"], "additionalProperties": False}},
+    {"name": "exportar_productos_excel",
+     "description": "Crea un Excel descargable con datos de productos tomados DIRECTAMENTE del panel (cifras exactas). "
+                    "Selecciona por referencias, texto, categoría o familia/colección. campos: " + ", ".join(files.PRODUCT_FIELDS) +
+                    ". por_talla (productos con tallas): 'columnas' = una columna por talla; 'filas' = una fila por talla.",
+     "input_schema": {"type": "object", "properties": {
+         "nombre_archivo": {"type": "string"}, "titulo": {"type": "string"},
+         "campos": {"type": "array", "items": {"type": "string", "enum": list(files.PRODUCT_FIELDS)}},
+         "referencias": {"type": "array", "items": {"type": "string"}, "description": "Referencias exactas o fragmentos; se respeta el orden"},
+         "texto": {"type": "string"}, "categoria": {"type": "string"}, "familia": {"type": "string"},
+         "solo_con_stock": {"type": "boolean"}, "por_talla": {"type": "string", "enum": ["no", "columnas", "filas"]},
+         "orden": {"type": "string", "description": "Campo por el que ordenar; con '-' delante, descendente (p. ej. '-on_hand')"}},
+         "required": ["nombre_archivo", "campos"], "additionalProperties": False}},
+    {"name": "crear_excel",
+     "description": "Crea un Excel descargable con las hojas, columnas y filas que indiques (para datos que no salen del panel, "
+                    "p. ej. resultados de consultas al ERP o de un documento adjunto). Los números deben ir como números.",
+     "input_schema": {"type": "object", "properties": {
+         "nombre_archivo": {"type": "string"},
+         "hojas": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
+             "nombre": {"type": "string"}, "titulo": {"type": "string"}, "subtitulo": {"type": "string"},
+             "columnas": {"type": "array", "items": {"type": "string"}},
+             "filas": {"type": "array", "items": {"type": "array", "items": _CELL}}},
+             "required": ["columnas", "filas"], "additionalProperties": False}}},
+         "required": ["nombre_archivo", "hojas"], "additionalProperties": False}},
+    {"name": "rellenar_excel",
+     "description": "Crea una copia de un Excel ADJUNTO escribiendo valores en celdas concretas y conservando su formato "
+                    "(plantillas de pedido, hojas de cliente…). estilo_desde_fila: fila de la plantilla cuyo formato heredan las celdas sin formato.",
+     "input_schema": {"type": "object", "properties": {
+         "documento_id": {"type": "string"}, "nombre_archivo": {"type": "string"},
+         "estilo_desde_fila": {"type": "integer", "minimum": 1},
+         "cambios": {"type": "array", "items": {"type": "object", "properties": {
+             "hoja": {"type": "string"}, "celda": {"type": "string", "description": "p. ej. D10"}, "valor": _CELL},
+             "required": ["celda", "valor"], "additionalProperties": False}}},
+         "required": ["documento_id", "cambios"], "additionalProperties": False}},
+    {"name": "crear_pdf",
+     "description": "Crea un informe PDF descargable con bloques: titulo (apartado), texto, lista (elementos) y tabla (columnas, filas).",
+     "input_schema": {"type": "object", "properties": {
+         "nombre_archivo": {"type": "string"}, "titulo": {"type": "string"},
+         "bloques": {"type": "array", "items": {"type": "object", "properties": {
+             "tipo": {"type": "string", "enum": ["titulo", "texto", "lista", "tabla"]},
+             "texto": {"type": "string"}, "elementos": {"type": "array", "items": {"type": "string"}},
+             "columnas": {"type": "array", "items": {"type": "string"}},
+             "filas": {"type": "array", "items": {"type": "array", "items": _CELL}}},
+             "required": ["tipo"], "additionalProperties": False}}},
+         "required": ["nombre_archivo", "titulo", "bloques"], "additionalProperties": False}},
+]
+SKILL_TOOL = {
+    "name": "cargar_skill",
+    "description": "Carga las instrucciones de una skill (guía de trabajo) de la lista de skills disponibles.",
+    "input_schema": {"type": "object", "properties": {"nombre": {"type": "string"}}, "required": ["nombre"],
+                     "additionalProperties": False}}
+
 
 def tools_for_section():
-    if config.section() == "holded":
-        return [t for t in TOOLS if t["name"] not in ODOO_ONLY] + [HOLDED_TOOL]
-    return TOOLS
+    base = ([t for t in TOOLS if t["name"] not in ODOO_ONLY] + [HOLDED_TOOL]) if config.section() == "holded" else list(TOOLS)
+    base += DOC_TOOLS
+    if skills.available():
+        base.append(SKILL_TOOL)
+    return base + integrations.tools()
 
 
 class AIUnavailable(Exception):
@@ -206,6 +272,17 @@ def anthropic_client(c) -> anthropic.Anthropic:
 
 
 # ----------------------------------------------------------------------------- estado
+class _LazyState:
+    """Los datos del ERP solo se cargan si alguna herramienta los necesita (leer un PDF no requiere Odoo)."""
+    def __init__(self):
+        self._v = None
+
+    def __iter__(self):
+        if self._v is None:
+            self._v = _state()
+        return iter(self._v)
+
+
 def _state():
     s = config.load_settings()
     snap = data.get_snapshot()
@@ -232,8 +309,37 @@ def _dump(obj):
     return txt
 
 
+def _file_out(ctx, item):
+    pub = {k: item[k] for k in ("id", "name", "type", "size")}
+    ctx["files"].append(pub)
+    extra = {k: item[k] for k in ("filas", "productos", "no_encontrados") if k in item}
+    return {"archivo_creado": item["name"], "id": item["id"], **extra,
+            "nota": "El usuario ya ve el botón para guardarlo en Descargas."}
+
+
 def run_tool(name, args, ctx):
+    # Herramientas que no necesitan los datos del ERP
+    if name == "cargar_skill":
+        return skills.load(args.get("nombre", ""))
+    if name == "leer_documento":
+        return files.read(args["documento_id"], args.get("hoja"), args.get("desde_fila") or 1, args.get("filas") or 150)
+    if name == "crear_excel":
+        return _file_out(ctx, files.create_excel(args["nombre_archivo"], args.get("hojas") or []))
+    if name == "rellenar_excel":
+        return _file_out(ctx, files.fill_excel(args["documento_id"], args.get("cambios") or [],
+                                               args.get("nombre_archivo"), args.get("estilo_desde_fila")))
+    if name == "crear_pdf":
+        return _file_out(ctx, files.create_pdf(args["nombre_archivo"], args.get("titulo"), args.get("bloques") or []))
+    res = integrations.handle(name, args, ctx)
+    if res is not None:
+        return res
     s, snap, metrics, al = ctx["state"]
+    if name == "exportar_productos_excel":
+        return _file_out(ctx, files.export_products(
+            metrics, config.erp_name() + (" (demo)" if snap.get("source") == "demo" else ""), args.get("campos") or [],
+            args["nombre_archivo"], refs=args.get("referencias"), text=args.get("texto"), category=args.get("categoria"),
+            family=args.get("familia"), by_size=args.get("por_talla") or "no", only_stock=bool(args.get("solo_con_stock")),
+            title=args.get("titulo"), order=args.get("orden")))
     if name == "resumen_inventario":
         ov = analytics.overview(metrics, [a for a in al if not a["acked"]])
         return {"fuente": snap["source"], "generado": snap["generated_at"], "avisos_datos": snap["warnings"],
@@ -364,7 +470,9 @@ def _exec_tools(calls, ctx):
         if perr:
             out.append((cid, f"Error: argumentos no válidos ({perr}). Reenvía la llamada con JSON correcto.", True))
             continue
-        ctx["queries"].append({"tool": name, "input": args})
+        shown = args if len(json.dumps(args, ensure_ascii=False, default=str)) < 600 else \
+            {k: (v if len(json.dumps(v, ensure_ascii=False, default=str)) < 120 else "…") for k, v in args.items()}
+        ctx["queries"].append({"tool": name, "input": shown})
         try:
             res = run_tool(name, args, ctx)
             out.append((cid, _dump(res), isinstance(res, dict) and "error" in res))
@@ -460,14 +568,14 @@ def _run_anthropic(c, messages, ctx, effort):
 def run_agent(messages, effort="medium"):
     """Bucle de herramientas. messages: lista [{role, content}] solo texto. Devuelve dict."""
     c = _conn()
-    ctx = {"state": _state(), "proposals": [], "queries": [], "model": c["ai_model"],
+    ctx = {"state": _LazyState(), "proposals": [], "queries": [], "files": [], "model": c["ai_model"],
            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost": None}}
     kind = credentials.PROVIDERS[c["ai_provider"]]["kind"]
     text = _run_anthropic(c, messages, ctx, effort) if kind == "anthropic" else _run_openai(c, messages, ctx)
     usage = ctx["usage"]
     alerts_mod.record_usage(c["ai_provider"], ctx["model"], usage["prompt_tokens"], usage["completion_tokens"], usage["cost"])
-    return {"text": text, "proposals": ctx["proposals"], "queries": ctx["queries"], "model": ctx["model"],
-            "provider": c["ai_provider"], "usage": usage}
+    return {"text": text, "proposals": ctx["proposals"], "queries": ctx["queries"], "files": ctx["files"],
+            "model": ctx["model"], "provider": c["ai_provider"], "usage": usage}
 
 
 SUMMARY_PROMPT = """Hoy es {hoy}. Prepara el resumen ejecutivo del inventario para el responsable de Compras y Logística.
@@ -494,12 +602,28 @@ def summary():
     return res
 
 
+def _attachments_note(refs) -> str:
+    lines = []
+    for r in refs or []:
+        try:
+            f = files.get(str(r.get("id") if isinstance(r, dict) else r))
+        except files.FileError:
+            continue
+        lines.append(f"- «{f['name']}» (id: {f['id']}, {f['type']}; {f.get('summary') or ''})")
+    return ("\n\n[Documentos adjuntos — léelos con leer_documento]\n" + "\n".join(lines)) if lines else ""
+
+
 def chat(history):
     hoy = f"(Fecha de hoy: {date.today().isoformat()})\n\n"
     msgs = []
     for i, m in enumerate(history[-20:]):
         role = "assistant" if m.get("role") == "assistant" else "user"
         content = str(m.get("content") or "")[:8000]
+        if role == "user":
+            content += _attachments_note(m.get("files"))
+        elif m.get("files"):
+            content += "\n\n[Archivos generados en esta respuesta: " + ", ".join(
+                f"«{f.get('name')}» (id: {f.get('id')})" for f in m["files"]) + "]"
         if i == 0 and role == "user":
             content = hoy + content
         msgs.append({"role": role, "content": content})
